@@ -386,6 +386,55 @@ def test_greedy_generation_is_deterministic_and_cfg_has_effect():
     assert int(guided_a.max()) < CB and int(guided_a.min()) >= 0
 
 
+def test_difficulty_head_tracks_entropy_rather_than_collapsing():
+    """The difficulty head must respond to uncertainty, not predict 0 always.
+
+    On real text over 95% of words are unambiguous with a target of exactly 0,
+    so a head trained on all words reaches a near-optimal loss by outputting 0
+    everywhere. Measured before the fix: entropy 0.99 produced a prediction of
+    0.0018. The loss therefore trains on ambiguous words only.
+    """
+    torch.manual_seed(0)
+    V, B, L, W = 40, 16, 24, 6
+    m = ContextEncoder(V, d_model=64, n_layers=2, n_heads=4, d_ff=128,
+                       dropout=0.0, max_codes=4)
+    opt = torch.optim.AdamW(m.parameters(), lr=3e-3)
+
+    ids = torch.randint(4, V, (B, L))
+    widx = torch.randint(0, W, (B, L))
+    # One ambiguous word per sentence, the rest unambiguous: the real ratio.
+    ncodes = torch.ones(B, W, dtype=torch.long)
+    ncodes[:, 0] = 2
+    mask = torch.ones(B, W, dtype=torch.bool)
+    # Targets are resampled every step, so the code head cannot memorize them
+    # and the posterior stays near 50/50 with entropy near 1. A working
+    # difficulty head must follow its target up there.
+    tgt = torch.full((B, W), -1, dtype=torch.long)
+
+    for _ in range(150):
+        tgt[:, 0] = torch.randint(0, 2, (B,))
+        out = m(ids, widx, ncodes, None)
+        loss, stats = context_encoder_loss(
+            out, tgt, mask, ncodes, ce_weight=1.0, distill_weight=0.0,
+            difficulty_weight=1.0, label_smoothing=0.0,
+        )
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+
+    out = m(ids, widx, ncodes, None)
+    amb = ncodes > 1
+    mean_entropy = float(out.entropy[amb].mean())
+    mean_difficulty = float(out.difficulty[amb].mean())
+    assert mean_entropy > 0.5, f"fixture did not stay uncertain: {mean_entropy}"
+    assert mean_difficulty > 0.3, (
+        f"difficulty collapsed: entropy {mean_entropy:.3f} but predicted "
+        f"{mean_difficulty:.4f}"
+    )
+    # And unambiguous words must still read exactly zero.
+    assert float(out.difficulty[ncodes == 1].abs().max()) == 0.0
+
+
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     failed = 0

@@ -302,16 +302,34 @@ def context_encoder_loss(
         stats["rep"] = rep.detach()
 
     # Difficulty head regresses the (detached) normalized posterior entropy.
-    if difficulty_weight > 0 and word_mask.any():
+    #
+    # Trained on AMBIGUOUS words only. On real text more than 95% of words have
+    # a single reading and therefore a target of exactly 0, so averaging over
+    # all of them lets the head reach a near-optimal loss by predicting 0
+    # everywhere. Measured before this fix: a word with entropy 0.99 received a
+    # predicted difficulty of 0.0018. Unambiguous words are already forced to 0
+    # analytically in forward(), so excluding them here costs nothing.
+    amb_mask = (n_codes_per_word > 1) & word_mask
+    if difficulty_weight > 0 and bool(amb_mask.any()):
         target = out.entropy.detach()
         # with_logits rather than plain BCE: the plain form is rejected under
         # fp16 autocast and is worse conditioned even in fp32.
         d_loss = F.binary_cross_entropy_with_logits(
-            out.difficulty_logit[word_mask].float(),
-            target[word_mask].clamp(0.0, 1.0).float(),
+            out.difficulty_logit[amb_mask].float(),
+            target[amb_mask].clamp(0.0, 1.0).float(),
         )
         total = total + difficulty_weight * d_loss
         stats["difficulty"] = d_loss.detach()
+        with torch.no_grad():
+            # Correlation between predicted difficulty and true entropy. If this
+            # sits near zero the head has collapsed again.
+            pred = out.difficulty[amb_mask].float()
+            tgt = target[amb_mask].float()
+            if pred.numel() > 1 and float(pred.std()) > 1e-6 and float(tgt.std()) > 1e-6:
+                stats["difficulty_corr"] = (
+                    ((pred - pred.mean()) * (tgt - tgt.mean())).mean()
+                    / (pred.std() * tgt.std())
+                )
 
     stats["loss"] = total.detach()
     stats["n_ambiguous"] = n_amb.detach().float()
