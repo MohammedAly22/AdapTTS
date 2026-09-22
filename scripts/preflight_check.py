@@ -68,6 +68,26 @@ def main() -> None:
     print("ENVIRONMENT")
     print("=" * 70)
 
+    @check("PyTorch version is new enough")
+    def _torch_version():
+        parts = torch.__version__.split("+")[0].split(".")
+        major, minor = int(parts[0]), int(parts[1])
+        if (major, minor) < (2, 4):
+            raise RuntimeError(
+                f"torch {torch.__version__} is too old. This code uses the "
+                "torch.amp.GradScaler signature introduced in 2.4. Upgrade with:\n"
+                "  pip install --upgrade torch torchaudio "
+                "--index-url https://download.pytorch.org/whl/cu121"
+            )
+        note = ""
+        if (major, minor) < (2, 6):
+            note = (
+                "\nnote: transformers 5.x refuses .bin checkpoints below torch 2.6 "
+                "(CVE-2025-32434).\nThe configured models all ship safetensors, so "
+                "this is fine, but a model swap may not be."
+            )
+        return f"torch {torch.__version__}{note}"
+
     @check("PyTorch sees a GPU")
     def _gpu():
         if not torch.cuda.is_available():

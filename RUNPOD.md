@@ -13,17 +13,38 @@ Pick a **4090 or A100**. Any Ampere or newer card supports bf16 in hardware,
 which the `exp1` config assumes. A 1660 Ti or other Turing card works but is
 several times slower and must use fp16.
 
-Open a terminal in JupyterLab and run:
+**There is no conda on a RunPod image, and you do not need one.** The pod is
+already an isolated container, so the system Python is the environment. Conda
+is only useful on a shared machine such as your own laptop.
+
+First, see what the image already provides:
 
 ```bash
 cd /workspace
+python --version
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+nvidia-smi
+```
+
+A RunPod PyTorch template normally reports a working CUDA torch, which saves
+you the slowest install step.
+
+```bash
 git clone https://github.com/MohammedAly22/AdapTTS.git
 cd AdapTTS
 
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 pip install -r requirements.txt
 python -m ipykernel install --user --name adaptts --display-name "AdapTTS"
 ```
+
+**Only if the check above printed `False`, an error, or a torch below 2.4:**
+
+```bash
+pip install --upgrade torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+```
+
+Do not run that otherwise. Replacing a working CUDA build costs several minutes
+and occasionally installs a wheel that does not match the pod's driver.
 
 ## 2. Preflight, before spending anything
 
