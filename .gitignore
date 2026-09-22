@@ -1,11 +1,22 @@
-# Data and generated artefacts
-data/
-cache/
-runs/
+# Datasets and generated artefacts.
+#
+# These patterns are anchored with a leading slash so they match only at the
+# repository root. An unanchored `data/` matches a directory named "data" at
+# ANY depth, which silently excluded the entire src/adaptts/data package
+# (discovery, dataset, preprocess, the CTC aligner) from the repository.
+/data/
+/cache/
+/runs/
+
+# Audio and array artefacts, wherever they land.
 *.wav
 *.npy
 *.pt
 *.ckpt
+*.safetensors
+
+# Keep the probe sentences and any other checked-in asset metadata.
+!assets/*.json
 
 # Python
 __pycache__/
@@ -15,10 +26,11 @@ __pycache__/
 .ipynb_checkpoints/
 venv/
 .venv/
+build/
+dist/
 
-# Editors / OS
+# Editors and OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-!assets/*.json

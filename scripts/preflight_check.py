@@ -121,6 +121,44 @@ def main() -> None:
     print("KNOWN FAILURE MODES")
     print("=" * 70)
 
+    @check("every source module is present")
+    def _complete():
+        """Catch files missing from the clone.
+
+        A .gitignore pattern such as an unanchored `data/` matches a directory
+        of that name at any depth, which once excluded the whole
+        src/adaptts/data package from the repository. The clone then imports
+        fine until the first stage that needs it. Import everything up front so
+        a partial checkout fails here instead of an hour into preprocessing.
+        """
+        import importlib
+
+        required = [
+            "adaptts.utils.config", "adaptts.utils.console",
+            "adaptts.utils.logging_utils", "adaptts.utils.preflight",
+            "adaptts.text.normalize", "adaptts.text.vocab",
+            "adaptts.text.egyptian", "adaptts.text.romanize",
+            "adaptts.data.ctc_aligner", "adaptts.data.discovery",
+            "adaptts.data.dataset", "adaptts.data.preprocess",
+            "adaptts.models.context_encoder", "adaptts.models.acoustic",
+            "adaptts.modules.transformer", "adaptts.train.common",
+            "adaptts.infer.pipeline",
+        ]
+        missing = []
+        for mod in required:
+            try:
+                importlib.import_module(mod)
+            except ImportError as exc:
+                missing.append(f"{mod} ({exc})")
+        if missing:
+            raise RuntimeError(
+                "modules missing from this checkout:\n  "
+                + "\n  ".join(missing)
+                + "\n\nThe clone is incomplete. Re-clone, or check .gitignore "
+                "for an unanchored pattern."
+            )
+        return f"all {len(required)} modules import"
+
     @check("dataloader collate is picklable (Windows spawn)")
     def _pickle():
         import pickle
