@@ -69,12 +69,39 @@ for each word type w with corpus frequency >= min_freq:
 
 Three sub-problems, each solved without rules or lists:
 
-**(a) Alignment without an aligner model.** We do not ship MFA, which is heavy
-and needs a lexicon, and a lexicon is a handwritten rule list. Instead we use
-**CTC forced alignment** with a wav2vec2/MMS Arabic CTC head, over characters.
-This is a standard Viterbi alignment on the CTC posterior lattice. It needs no
-lexicon and no G2P. It is implemented from scratch in `align/ctc_aligner.py` so
-there is no dependency on an external aligner binary.
+**(a) Alignment without an aligner binary.** We do not ship Montreal Forced
+Aligner, which is heavy and needs a pronunciation lexicon, and a lexicon is the
+handwritten rule list this project rejects. Instead we run **CTC forced
+alignment**: a Viterbi search over the CTC posterior lattice, implemented from
+scratch in `data/ctc_aligner.py`.
+
+The acoustic model is `MahmoudAshraf/mms-300m-1130-forced-aligner`. Two
+practical details drove that choice:
+
+* It ships **safetensors**. Transformers 5.x refuses to load `.bin`
+  checkpoints unless torch is at least 2.6 (CVE-2025-32434), and most Arabic
+  wav2vec2 checkpoints are `.bin` only.
+* Its CTC vocabulary is **romanized**, 31 Latin tokens with no Arabic script.
+  So `text/romanize.py` transliterates the transcript while recording, for
+  every Latin character, which Arabic character produced it. Latin frame spans
+  are mapped back through that index to Arabic character spans, and from there
+  to words.
+
+The romanization is a script mapping used only to find frame boundaries. It
+makes no pronunciation decisions; those remain with the discovered codes.
+
+One trap worth naming: on this model the CTC blank is `<blank>` at index 0
+while `pad_token_id` is 1. Using the tokenizer's pad id as the blank produces
+alignments that look plausible and are wrong, so the blank is detected
+explicitly.
+
+**Threshold calibration.** Measured on Egyptian conversational speech, the
+median aligned word lasts 0.24 s and the 5th percentile is 0.06 s. A 0.08 s
+minimum therefore discards real short words, and a romanized aligner scores
+lower than a native-script one because transliteration is approximate. The
+shipped thresholds (0.04 s, mean log-prob -6.5) keep 99.4% of spans against
+88.3% for the stricter defaults. Discovery needs occurrences far more than it
+needs a pristine tail.
 
 **(b) A pronunciation-bearing embedding.** Raw mel is speaker and prosody
 dominated. The right representation is a **self-supervised speech layer known to
@@ -173,10 +200,15 @@ independently supervised model, not an end-to-end branch. Consequences:
 
 ### 2.2 The teacher and student split
 
-MARBERTv2 is 163M params, too heavy for CPU-first inference at our budget. But
-we only need it **at training time**:
+The teacher is a frozen Arabic BERT, about 135M params: too heavy for CPU-first
+inference at our budget, but we only need it **at training time**:
 
-- **Teacher**: frozen MARBERTv2. Cached once to disk as fp16. Never runs again.
+- **Teacher**: frozen, cached once to disk as fp16, and never run again.
+  The default is `aubmindlab/bert-base-arabertv02-twitter`, chosen because it
+  is trained on dialectal Arabic and ships safetensors. MARBERTv2 is the
+  stronger Egyptian encoder but is distributed as `.bin` only, which
+  transformers 5.x refuses without torch 2.6 or newer. Both are 768-dim
+  12-layer BERTs, so swapping back is a one-line config change.
 - **Student**: a 3.5M-param char-level transformer, trained to match the
   teacher PC posterior via KL divergence plus hard CE on discovered labels.
 

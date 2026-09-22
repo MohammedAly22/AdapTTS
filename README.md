@@ -85,13 +85,13 @@ read the commitment and overwrite it.
 │         ├──► A1  CTC forced alignment ────► word time spans          │
 │         │        (no lexicon, no MFA, implemented in-repo)           │
 │         │                                                            │
-│         ├──► A2  wav2vec2 layers 6-9 ─────► span embeddings          │
+│         ├──► A2  wav2vec2 mid layers ─────► span embeddings          │
 │         │                                                            │
 │         ├──► A3  stability clustering ────► PRONUNCIATION CODES ★    │
 │         │        per word type: how many readings, and which one     │
 │         │        each occurrence is                                  │
 │         │                                                            │
-│         ├──► A4  MARBERTv2 (frozen) ──────► cached teacher states    │
+│         ├──► A4  Arabic BERT (frozen) ────► cached teacher states    │
 │         │                                                            │
 │         └──► A5  Mimi encode ─────────────► RVQ codes @ 12.5 Hz      │
 │                                                                      │
@@ -106,7 +106,7 @@ read the commitment and overwrite it.
 │     characters ─► tiny transformer ─► per-word code logits          │
 │                                     └─► difficulty score            │
 │     losses:  cross-entropy on discovered codes                      │
-│            + KL distillation from the MARBERTv2 teacher             │
+│            + KL distillation from the frozen Arabic BERT teacher    │
 │            + representation distillation                            │
 │                                                                      │
 │  STAGE C  Acoustic Model  ~56M params                 7-9 h         │

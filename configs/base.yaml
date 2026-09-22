@@ -31,7 +31,15 @@ text:
   normalize_digits: true
 
 teacher:
-  model_id: UBC-NLP/MARBERTv2
+  # MARBERTv2 is the strongest Egyptian-dialect encoder, but it ships .bin only
+  # and transformers 5.x refuses .bin without torch >= 2.6 (CVE-2025-32434).
+  # AraBERT v02-twitter is trained on dialectal Arabic, ships safetensors, and
+  # measurably separates the homograph senses we care about: the two readings
+  # of علم sit at cosine 0.49, far from the ~0.9 of a single sense.
+  #
+  # If you are on torch >= 2.6, UBC-NLP/MARBERTv2 is worth trying instead; both
+  # are 768-dim 12-layer BERTs, so nothing else in the config changes.
+  model_id: aubmindlab/bert-base-arabertv02-twitter
   layers: [8, 9, 10, 11]
   hidden_size: 768
   max_length: 256
@@ -45,13 +53,26 @@ align:
   model_id: MahmoudAshraf/mms-300m-1130-forced-aligner
   batch_size: 8
   chunk_seconds: 20.0
-  min_word_seconds: 0.08
+  # Measured on Egyptian conversational speech: the median aligned word is only
+  # 0.24 s and the 5th percentile is 0.06 s, so a 0.08 s floor discards real
+  # short words. A romanized aligner also scores lower than a native-script one
+  # because transliteration is approximate, which pushes good alignments down.
+  # These thresholds keep 99.4% of spans instead of 88.3%, and discovery needs
+  # occurrences far more than it needs a pristine tail.
+  min_word_seconds: 0.04
   max_word_seconds: 2.5
-  score_threshold: -3.5
+  score_threshold: -6.5
 
 spanemb:
-  model_id: facebook/wav2vec2-large-xlsr-53
-  layers: [6, 7, 8, 9]      # middle layers carry phonetic identity
+  # Reuses the aligner checkpoint: same wav2vec2 family, ships safetensors
+  # (transformers 5.x blocks .bin without torch >= 2.6), and it is already
+  # cached from the alignment stage, so no second download.
+  #
+  # Layer choice: this is a 24-layer model, and in wav2vec2 the phonetic
+  # information peaks around the middle. Layers 6-9 would be too shallow here
+  # and would carry speaker and channel identity instead of pronunciation.
+  model_id: MahmoudAshraf/mms-300m-1130-forced-aligner
+  layers: [10, 12, 14, 16]
   batch_size: 8
   context_pad: 0.02
   dim: 1024

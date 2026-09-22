@@ -207,6 +207,56 @@ def test_elongation_is_collapsed():
     assert normalize_egyptian("جااااااامد") == "جاامد"
 
 
+# --------------------------------------------------------------------------
+# Romanization (used only to drive CTC forced alignment)
+# --------------------------------------------------------------------------
+
+
+def test_romanization_index_map_is_consistent():
+    """Every Latin character must point at a real source character.
+
+    The aligner converts Latin frame spans back into Arabic word spans through
+    this map, so an off-by-one here silently misaligns every word.
+    """
+    from adaptts.text.romanize import romanize_with_map
+
+    for text in [
+        "انا شوفت علم مصر بيرفرف",
+        "علم الفيزيا من اهم العلوم البشرية",
+        "خالد شرب الشاي في القهوة",
+        "الشمس طالعة والجو حلو",
+    ]:
+        latin, src = romanize_with_map(text)
+        assert len(latin) == len(src), f"{text!r}: {len(latin)} vs {len(src)}"
+        for i, j in enumerate(src):
+            assert 0 <= j < len(text), f"source index {j} out of range"
+        # Indices must be non-decreasing, or spans would cross word boundaries.
+        assert all(a <= b for a, b in zip(src, src[1:])), "index map is not monotonic"
+        # Spaces survive so word boundaries are recoverable.
+        assert latin.count(" ") == text.count(" ")
+
+
+def test_romanization_emits_only_aligner_vocabulary():
+    """The MMS aligner has 31 tokens; anything else would be dropped silently."""
+    from adaptts.text.romanize import romanize
+
+    allowed = set("aieonutsrmkldghybpwcvjzf'qx ")
+    for text in ["انا شوفت علم مصر", "خالد شرب الشاي", "الجو حلو النهارده"]:
+        out = romanize(text)
+        extra = set(out) - allowed
+        assert not extra, f"{text!r} -> {out!r} emitted {sorted(extra)}"
+
+
+def test_ctc_targets_drop_unmappable_characters():
+    from adaptts.text.romanize import build_ctc_targets
+
+    vocab = {c: i + 4 for i, c in enumerate("aieonutsrmkldghybpwcvjzf'qx")}
+    ids, src = build_ctc_targets("انا شوفت علم", vocab, unk_id=3)
+    assert len(ids) == len(src)
+    assert ids, "produced no targets at all"
+    assert all(i in vocab.values() for i in ids), "emitted an id outside the vocabulary"
+
+
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")

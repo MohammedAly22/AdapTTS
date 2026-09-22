@@ -113,7 +113,7 @@ class TextConfig:
 class TeacherConfig:
     """Frozen contextual LM used only during preprocessing."""
 
-    model_id: str = "UBC-NLP/MARBERTv2"
+    model_id: str = "aubmindlab/bert-base-arabertv02-twitter"
     layers: Tuple[int, ...] = (8, 9, 10, 11)
     hidden_size: int = 768
     max_length: int = 256
@@ -128,17 +128,17 @@ class AlignConfig:
     model_id: str = "MahmoudAshraf/mms-300m-1130-forced-aligner"
     batch_size: int = 8
     chunk_seconds: float = 20.0
-    min_word_seconds: float = 0.08
+    min_word_seconds: float = 0.04  # Egyptian speech is fast; median word 0.24 s
     max_word_seconds: float = 2.5
-    score_threshold: float = -3.5  # mean log-prob per frame; below this, drop
+    score_threshold: float = -6.5  # mean log-prob per frame; below this, drop
 
 
 @dataclass
 class SpanEmbConfig:
     """Self-supervised acoustic embedding for word spans."""
 
-    model_id: str = "facebook/wav2vec2-large-xlsr-53"
-    layers: Tuple[int, ...] = (6, 7, 8, 9)
+    model_id: str = "MahmoudAshraf/mms-300m-1130-forced-aligner"
+    layers: Tuple[int, ...] = (10, 12, 14, 16)  # mid-stack of a 24-layer model
     batch_size: int = 8
     context_pad: float = 0.02  # seconds of padding around the span
     dim: int = 1024
