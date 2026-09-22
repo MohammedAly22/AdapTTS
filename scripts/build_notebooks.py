@@ -599,6 +599,15 @@ If the pod restarts, resume with
 `--resume runs/exp1/checkpoints/acoustic/last.pt`.
 """),
     code("!python scripts/train_acoustic.py --config $CONFIG"),
+    md("""
+## Quick machinery check
+
+Before listening critically, confirm the parts are working: real samples, a
+measurable difference between exit depths, and an override that actually
+changes the output. Audio quality at this point depends entirely on how long
+the model trained.
+"""),
+    code("!python scripts/smoke_generate.py --config $CONFIG --device cpu"),
     md("## Listen to the probe set"),
     code("""
 import json
