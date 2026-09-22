@@ -98,13 +98,48 @@ python scripts/train_acoustic.py --config configs/exp1_egyptian.yaml \
 
 ### TensorBoard
 
+**RunPod fixes a pod's exposed ports when the pod is created.** There is no way
+to add one to a running pod, and the Connect tab only lists what the template
+declared. So do not plan on exposing 6006; use the port you already have.
+
+**Easiest: run it inside JupyterLab.** Your pod already exposes 8888, and
+JupyterLab proxies TensorBoard through it. In a notebook cell:
+
+```python
+%load_ext tensorboard
+%tensorboard --logdir runs/exp1/tensorboard --port 6006
+```
+
+It renders inline, no port changes needed. Notebooks 02 and 03 already contain
+this cell. For a full browser tab instead, `pip install jupyter-server-proxy`,
+restart JupyterLab, and open
+`https://<pod-id>-8888.proxy.runpod.net/proxy/6006/`.
+
+**Most responsive: an SSH tunnel.** The "SSH over exposed TCP" entry on the
+Connect tab forwards any port to your own machine:
+
+```bash
+ssh root@<pod-ip> -p <pod-port> -i ~/.ssh/id_ed25519 -L 6006:localhost:6006
+```
+
+Leave that open, start TensorBoard on the pod, then browse to
+`http://localhost:6006` locally.
+
+**Only if you want a permanent public URL:** recreate the pod and add 6006 to
+*HTTP Ports* under Edit Template. Not worth losing a running job for.
+
+Whichever route you take, bind to all interfaces or the proxy cannot reach it:
+
 ```bash
 tensorboard --logdir runs/exp1/tensorboard --port 6006 --host 0.0.0.0
 ```
 
-Expose port 6006 in the RunPod dashboard. The `probe/` tab renders the eight
-homograph sentences as audio every `sample_every` steps, so you can listen to
-progress rather than infer it from a curve.
+Without `--host 0.0.0.0` TensorBoard listens on localhost only. The in-notebook
+magic works either way; the proxy and tunnel routes need it.
+
+The `probe/` tab renders the eight homograph sentences as audio every
+`sample_every` steps, so you can listen to progress rather than infer it from a
+curve.
 
 ### What to expect, and when
 
@@ -146,7 +181,7 @@ interactively with playback.
 | **Reading the discovery report** | **notebook** | this is the decision, and it wants Arabic rendering |
 | Context encoder | either | only 20 minutes |
 | Acoustic training | **terminal, detached** | survives a dropped connection |
-| TensorBoard | browser | monitoring |
+| TensorBoard | **notebook cell** | 6006 is not exposed; the magic proxies through 8888 |
 | Listening, overrides | notebook | needs inline audio playback |
 
 ## Cost
