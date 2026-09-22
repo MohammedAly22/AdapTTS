@@ -202,6 +202,12 @@ python tests/test_models.py       # causality, KV cache, masking
 python tests/test_integration.py  # the real pipeline, synthetic data
 ```
 
+**Renting a GPU?** [RUNPOD.md](RUNPOD.md) covers the workflow, what to run in a
+terminal versus a notebook, expected training milestones, and the cheap
+checkpoint that tests the central hypothesis for under a dollar. Run
+`python scripts/preflight_check.py --config <your-config>` first; it verifies
+every known failure mode before you spend anything.
+
 Every stage was run end to end on a GTX 1660 Ti against the real dataset.
 [VERIFICATION.md](VERIFICATION.md) records the measured timings, what the run
 proved, what it did not, and the six bugs it exposed.
@@ -321,6 +327,7 @@ slot rather than in the weights.
 ```
 ARCHITECTURE.md              the design and the reasoning behind it
 VERIFICATION.md              measured results from a real end-to-end run
+RUNPOD.md                    rented-GPU workflow, milestones, costs
 configs/
   base.yaml                  every tunable, documented
   exp0_small.yaml            small dataset, consumer GPU

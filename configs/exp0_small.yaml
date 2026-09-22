@@ -89,6 +89,14 @@ acoustic:
 optim:
   lr: 3.0e-4
   warmup_steps: 300
+  # 12k steps is about 207 epochs over this 3-hour corpus. Measured: 300 steps
+  # took 45 min on a 1660 Ti and reached acc_q0 0.125, which sounds like the
+  # right speaker making no words. That is the expected first milestone.
+  #
+  # Be clear about the ceiling: 3 hours of a single speaker is not enough for
+  # a codec language model to produce clean speech no matter how long it runs.
+  # exp0 exists to prove the pipeline, not to sound good. Use exp1 for audio
+  # you intend to judge.
   max_steps: 12000
 
 train:
