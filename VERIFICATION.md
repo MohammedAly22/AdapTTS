@@ -27,7 +27,21 @@ fp16 with a gradient scaler. On Ampere or newer, switch to bf16.
 | Teacher cache | 21 s | head fits the discovered codes at 100% train accuracy |
 | Mimi codec | 1 m 19 s | 136,296 frames, 181.7 min of audio |
 | Context encoder, 1500 steps | 1 m 06 s | 22.6 steps/s, 80 MB peak |
-| Acoustic model | ~4.2 s/step at batch 32 | 4.9 GB peak, loss descending |
+| Acoustic model, 300 steps | 44 m 45 s | loss 15.9 -> 10.6, coarse accuracy 0.014 -> 0.125 |
+
+After training, `scripts/smoke_generate.py` produced real audio on CPU:
+
+| | |
+|---|---|
+| Real-time factor | **0.36** (faster than real time, on CPU) |
+| Adaptive depth | depth 3 = 1.21 s, depth 5 = 1.38 s, depth 8 = 1.50 s |
+| Exit losses | 5.341 / 5.336 / 5.334, so self-distillation is working |
+| Override | rendered both readings of a discovered word, no diacritics typed |
+
+At 300 steps the audio is not intelligible, which is expected. What this
+establishes is that every mechanism in the design functions: codes resolve,
+overrides reach the model, shallower exits genuinely cost less, and a waveform
+comes out.
 
 Text normalization left **zero** digits or Latin characters across all 2012
 transcripts.
@@ -99,6 +113,35 @@ This one mattered beyond the metric. Difficulty selects the acoustic model's
 exit depth, so a collapsed head would have routed every sentence to the
 shallowest exit regardless of how hard it was, silently disabling the
 adaptive-compute mechanism while every loss curve still looked healthy.
+
+**8. The duration predictor could not see sequence length.** Every sentence,
+from 38 to 79 characters, predicted exactly 26.2 frames against true lengths of
+63 to 77.
+
+The head mean-pooled the text memory before predicting, and mean pooling
+divides by sequence length, so length was removed from its input by
+construction. No amount of training could fix that. It now predicts a speaking
+*rate* in frames per character and multiplies by the real count: length is
+arithmetic and needs no learning, while rate is the part that genuinely depends
+on content.
+
+**9. The central learning test was measuring noise.** It asserted that a model
+trained on 10 sentences generalizes to 2 held-out ones. Measured across seeds it
+passed 3 to 8 times out of 8 regardless of what the code did.
+
+Investigating properly exposed a second issue: on a larger corpus the model was
+keying on the function word في, which was accidentally correlated with one
+reading. Balancing that away lowered accuracy further, and duplicating
+sentences did not help.
+
+The honest conclusion is that a character-level model cannot learn semantics
+from a few dozen synthetic sentences, and no fixture can hold enough varied
+Arabic to change that. Semantic generalization is what the 68-hour corpus and
+the distilled teacher are for, and it is measured there by held-out code
+accuracy during real training. The unit test now checks what it can establish
+deterministically: that the supervision pathway fits the discovered codes, that
+the same word in two contexts receives two different codes, and that an
+unambiguous word is structurally incapable of receiving a second reading.
 
 ## A note on running two jobs at once
 

@@ -435,6 +435,33 @@ def test_difficulty_head_tracks_entropy_rather_than_collapsing():
     assert float(out.difficulty[ncodes == 1].abs().max()) == 0.0
 
 
+def test_duration_prediction_scales_with_text_length():
+    """A longer sentence must predict more frames.
+
+    The head mean-pools its input, and mean pooling removes sequence length, so
+    predicting a total directly yields the same number for every input. Measured
+    before the fix: sentences of 38 and 79 characters both predicted 26.2
+    frames. The head now predicts a rate and multiplies by the real length.
+    """
+    m, ch, pc, cd, sp, cm, fm, (B, S, T, Q, CB) = _acoustic_fixture()
+    with torch.no_grad():
+        mem = m.encode_text(ch, pc, None)
+        # Same content, different valid lengths, via the padding mask.
+        short_mask = torch.zeros(B, S, dtype=torch.bool)
+        short_mask[:, S // 3 :] = True
+        long_mask = torch.zeros(B, S, dtype=torch.bool)
+        long_mask[:, (2 * S) // 3 :] = True
+        d_short = m.predict_duration(mem, short_mask)
+        d_long = m.predict_duration(mem, long_mask)
+
+    assert torch.all(d_long > d_short), (
+        f"longer text must predict more frames: {d_short.tolist()} vs {d_long.tolist()}"
+    )
+    # And the prediction must vary at all, rather than being a learned constant.
+    assert float(d_long.std()) >= 0.0 and float((d_long - d_short).abs().min()) > 0.5
+    assert torch.all(d_short >= 4.0), "durations must stay positive and usable"
+
+
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     failed = 0
