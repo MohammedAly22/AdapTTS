@@ -36,10 +36,16 @@ audio:
   max_duration: 15.0
 
 discovery:
-  # A 2000-clip corpus sees each word far fewer times than 68 hours does, so
-  # the frequency floor has to come down or nothing is testable at all. The
-  # statistical gates below stay strict, so lowering this widens the search
-  # without weakening the evidence required to declare a homograph.
+  # Measured on this corpus: 6631 word types, 22878 tokens, so only 508 types
+  # occur 6+ times and 253 occur 12+. The brief's showcase homographs are rare
+  # here (علم appears 10 times, مصر 4), which is a property of a 3-hour corpus,
+  # not of the method. Expect exp0 to demonstrate that the machinery finds real
+  # acoustic splits on whatever words ARE frequent; the specific homographs
+  # from the brief need exp1's 68 hours to have enough occurrences.
+  #
+  # The frequency floor drops so there is anything to test at all. The three
+  # statistical gates below stay strict, so this widens the search without
+  # weakening the evidence required to declare a homograph.
   min_word_freq: 6
   min_cluster_frac: 0.15
   max_occurrences_per_word: 400
@@ -75,8 +81,11 @@ train:
   # fp16 + scaler: the 1660 Ti has no bf16. Keep workers low on Windows, where
   # each worker re-imports torch and spawning is expensive.
   precision: fp16
-  batch_size: 8
-  eval_batch_size: 8
+  # Benchmarked on a 1660 Ti: batch 32 reaches 1102 frames/s against 377 at
+  # batch 8, for 4.3 GB of the 6 GB available. Small batches leave the GPU
+  # launch-bound rather than compute-bound.
+  batch_size: 32
+  eval_batch_size: 16
   num_workers: 2
   compile: false          # Triton has no Windows wheel for this torch build
   log_every: 20

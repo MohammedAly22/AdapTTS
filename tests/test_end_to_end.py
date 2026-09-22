@@ -281,9 +281,13 @@ def test_smoke_config_is_loadable_and_consistent():
     assert cfg.name == "exp1_smoke"
     assert cfg.acoustic.exit_layers[-1] == cfg.acoustic.n_layers
     assert len(cfg.acoustic.rvq_loss_weights) == cfg.audio.n_quantizers
-    # Inheritance must actually reach the base file.
+    # Inheritance must actually reach the base file. The specific teacher can
+    # change (see base.yaml on safetensors availability), so assert that the
+    # value is inherited and coherent rather than pinning one model name.
     assert cfg.codec_model_id == "kyutai/mimi"
-    assert cfg.teacher.model_id == "UBC-NLP/MARBERTv2"
+    assert cfg.teacher.model_id and "/" in cfg.teacher.model_id
+    assert cfg.teacher.hidden_size == 768
+    assert max(cfg.teacher.layers) < 12
 
     full = load_config(root / "configs" / "exp1_egyptian.yaml")
     assert full.acoustic.n_layers == 12 and full.optim.max_steps == 90000

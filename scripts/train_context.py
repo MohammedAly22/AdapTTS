@@ -25,7 +25,11 @@ from torch.utils.tensorboard import SummaryWriter
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from adaptts.data.dataset import AdapTTSDataset, LengthBucketSampler, collate  # noqa: E402
+from adaptts.data.dataset import (  # noqa: E402
+    AdapTTSDataset,
+    Collator,
+    LengthBucketSampler,
+)
 from adaptts.data.discovery import PronunciationLexicon  # noqa: E402
 from adaptts.models.context_encoder import ContextEncoder, context_encoder_loss  # noqa: E402
 from adaptts.text.vocab import CharVocab  # noqa: E402
@@ -72,8 +76,8 @@ def build_loader(cfg, ds, shuffle: bool, batch_size: int) -> DataLoader:
         pin_memory=cfg.train.pin_memory,
         persistent_workers=cfg.train.persistent_workers and cfg.train.num_workers > 0,
         prefetch_factor=cfg.train.prefetch_factor if cfg.train.num_workers > 0 else None,
-        collate_fn=lambda b: collate(
-            b, ds.vocab.pad_id, cfg.discovery.max_codes_per_word,
+        collate_fn=Collator(
+            ds.vocab.pad_id, cfg.discovery.max_codes_per_word,
             cfg.audio.n_quantizers, cfg.teacher.hidden_size,
         ),
     )

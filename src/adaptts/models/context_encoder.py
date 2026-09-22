@@ -42,6 +42,7 @@ class ContextEncoderOutput:
     code_logits: torch.Tensor  # [B, W, max_codes], illegal codes masked
     code_probs: torch.Tensor  # [B, W, max_codes]
     difficulty: torch.Tensor  # [B, W] in [0, 1]
+    difficulty_logit: torch.Tensor  # [B, W] pre-sigmoid, for a stable BCE
     entropy: torch.Tensor  # [B, W] normalized posterior entropy
     word_hidden: torch.Tensor  # [B, W, d_model]
     char_hidden: torch.Tensor  # [B, L, d_model]
@@ -190,13 +191,17 @@ class ContextEncoder(nn.Module):
         norm_ent = ent / torch.log(n_eff.clamp(min=2.0))
         norm_ent = torch.where(n_codes_per_word > 1, norm_ent, torch.zeros_like(norm_ent))
 
-        diff = torch.sigmoid(self.difficulty_head(word_hidden).squeeze(-1))
+        # Keep the raw logit: binary_cross_entropy is unsafe under fp16 autocast,
+        # so the loss uses the fused with-logits form instead of this sigmoid.
+        diff_logit = self.difficulty_head(word_hidden).squeeze(-1)
+        diff = torch.sigmoid(diff_logit)
         diff = torch.where(n_codes_per_word > 1, diff, torch.zeros_like(diff))
 
         return ContextEncoderOutput(
             code_logits=logits,
             code_probs=probs,
             difficulty=diff,
+            difficulty_logit=diff_logit,
             entropy=norm_ent,
             word_hidden=word_hidden,
             char_hidden=char_hidden,
@@ -299,8 +304,10 @@ def context_encoder_loss(
     # Difficulty head regresses the (detached) normalized posterior entropy.
     if difficulty_weight > 0 and word_mask.any():
         target = out.entropy.detach()
-        d_loss = F.binary_cross_entropy(
-            out.difficulty[word_mask].clamp(1e-6, 1 - 1e-6).float(),
+        # with_logits rather than plain BCE: the plain form is rejected under
+        # fp16 autocast and is worse conditioned even in fp32.
+        d_loss = F.binary_cross_entropy_with_logits(
+            out.difficulty_logit[word_mask].float(),
             target[word_mask].clamp(0.0, 1.0).float(),
         )
         total = total + difficulty_weight * d_loss

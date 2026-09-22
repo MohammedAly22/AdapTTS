@@ -155,6 +155,13 @@ class DiscoveryConfig:
     stability_threshold: float = 0.72  # Fowlkes-Mallows
     silhouette_threshold: float = 0.10
     min_separation: float = 0.55  # normalized centroid distance gate
+    # Reject a split when span duration explains more than this share of it.
+    # Without this gate, discovery finds elongated-vs-fast realizations rather
+    # than homographs, because mean-pooled embeddings track span length.
+    # Calibrated on real data: accepted splits cluster at R^2 <= 0.21 with a
+    # clear gap to the duration-driven ones at 0.31 and 0.46, so 0.25 sits in
+    # the gap rather than on an arbitrary round number.
+    max_duration_confound: float = 0.25
     pca_dim: int = 48
     min_cluster_frac: float = 0.12  # a code must own >=12% of occurrences
     random_seed: int = 1234

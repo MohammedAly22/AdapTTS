@@ -85,6 +85,12 @@ discovery:
   stability_threshold: 0.72
   silhouette_threshold: 0.10
   min_separation: 0.55
+  # A split that span duration alone explains is prosody, not a second
+  # reading. Without this gate the accepted splits had four-fold mean-duration
+  # differences between clusters. Calibrated on real data: genuine splits sit
+  # at R^2 <= 0.21, duration-driven ones at 0.31 and 0.46, so 0.25 falls in
+  # the gap between the two populations.
+  max_duration_confound: 0.25
   pca_dim: 48
   min_cluster_frac: 0.12
   random_seed: 1234
