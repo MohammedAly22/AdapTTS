@@ -508,7 +508,15 @@ def main() -> None:
         "--stage", default="all",
         choices=["all", "manifest", "align", "spanemb", "discover", "teacher", "codec"],
     )
-    ap.add_argument("--force", action="store_true", help="recompute even if cached")
+    ap.add_argument(
+        "--force", action="store_true",
+        help="recompute the stage named by --stage, even if it is cached",
+    )
+    ap.add_argument(
+        "--force-upstream", action="store_true",
+        help="also recompute the stages the named one depends on "
+             "(use when an upstream cache is stale, not merely to rerun)",
+    )
     ap.add_argument("--limit", type=int, default=0, help="debug: only N utterances")
     args = ap.parse_args()
 
@@ -517,28 +525,53 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("AdapTTS preprocessing")
     logger.info("device: %s", device)
+    if args.force and args.stage != "all" and not args.force_upstream:
+        logger.info(
+            "--force applies to stage %r only; upstream caches are reused "
+            "(pass --force-upstream to rebuild those too)", args.stage,
+        )
     log_config_summary(logger, cfg)
+
+    def run(stage: str) -> bool:
+        return args.stage in ("all", stage)
+
+    def force_for(stage: str) -> bool:
+        """Should this stage recompute?
+
+        --force applies to the stage the user named. It does not cascade to the
+        stages that one depends on, because those caches are usually valid and
+        recomputing them is expensive: span embeddings alone take 11 minutes on
+        the 68-hour corpus. --force-upstream opts back in.
+        """
+        if not args.force:
+            return False
+        if args.stage == "all" or args.force_upstream:
+            return True
+        return args.stage == stage
+
 
     Path(cfg.paths.cache_dir).mkdir(parents=True, exist_ok=True)
     save_config(cfg, Path(cfg.paths.cache_dir) / "config_snapshot.yaml")
 
-    utts = build_manifest(cfg, force=args.force and args.stage in ("all", "manifest"))
+    utts = build_manifest(cfg, force=force_for("manifest"))
     if args.limit:
         utts = utts[: args.limit]
         logger.warning("limiting to %d utterances (debug)", len(utts))
-    build_char_vocab(cfg, utts, force=args.force)
-
-    run = lambda s: args.stage in ("all", s)  # noqa: E731
+    build_char_vocab(cfg, utts, force=force_for("manifest"))
 
     align_path = Path(cfg.paths.align_dir) / "word_alignments.jsonl"
     if run("align"):
-        align_path = stage_align(cfg, utts, device, args.force)
+        align_path = stage_align(cfg, utts, device, force_for("align"))
     elif not align_path.exists() and args.stage in ("spanemb", "discover"):
         raise SystemExit("stage 'align' must run before 'spanemb'/'discover'")
 
     if run("spanemb") or run("discover"):
-        occ, embs = stage_span_embeddings(cfg, utts, align_path, device, args.force)
-        lexicon, labels = discover_pronunciation_codes(cfg, occ, embs, force=args.force)
+        occ, embs = stage_span_embeddings(
+            cfg, utts, align_path, device, force_for("spanemb")
+        )
+        lexicon, labels = discover_pronunciation_codes(
+            cfg, occ, embs, force=force_for("discover")
+        )
         with open(Path(cfg.paths.cache_dir) / "code_labels.json", "w", encoding="utf-8") as f:
             json.dump({f"{k[0]}\t{k[1]}": v for k, v in labels.items()}, f)
         report_discovery(cfg, lexicon)
@@ -558,10 +591,10 @@ def main() -> None:
     if run("teacher"):
         if lexicon is None:
             raise SystemExit("stage 'discover' must run before 'teacher'")
-        stage_teacher(cfg, utts, lexicon, labels, device, args.force)
+        stage_teacher(cfg, utts, lexicon, labels, device, force_for("teacher"))
 
     if run("codec"):
-        stage_codec(cfg, utts, device, args.force)
+        stage_codec(cfg, utts, device, force_for("codec"))
 
     logger.info("")
     logger.info("=" * 68)

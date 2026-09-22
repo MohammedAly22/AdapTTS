@@ -228,7 +228,13 @@ measured at 543 batches/s.
 
 **Discovery finds no ambiguous words.** Lower `discovery.min_word_freq`, or
 relax `stability_threshold` and `min_separation`. Rerun only that stage with
-`--stage discover --force`; the expensive alignment is already cached.
+`--stage discover --force`.
+
+`--force` applies to the stage you name and does not cascade upstream, so the
+alignment and span embeddings are reused. That matters: span embeddings alone
+take 11 minutes on the 68-hour corpus. Pass `--force-upstream` only when an
+upstream cache is genuinely stale, such as after changing the aligner model or
+the duration window.
 
 **Discovery finds implausible words.** Tighten `max_duration_confound` below
 0.25. Clusters that differ mainly in how long the word was spoken are prosody,
