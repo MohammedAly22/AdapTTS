@@ -290,6 +290,22 @@ Modern Standard: **no linking waw between magnitude groups.**
 The waw belongs to the tens group alone, never between groups. A test asserts
 this across every number from 0 to 10000.
 
+Phone numbers are grouped the way people actually say them, not spelled out
+digit by digit. The 01X prefix is read as a number, and a fourth digit of zero
+is absorbed into it:
+
+| Input | Spoken |
+|---|---|
+| `01027756313` | زيرو عشرة، اتنين سبعة سبعة، خمسة ستة، تلاتة واحد تلاتة |
+| `01116953882` | زيرو حداشر، واحد ستة تسعة، خمسة تلاتة، تمانية تمانية اتنين |
+| `01002776313` | زيرو مية، اتنين سبعة سبعة، ستة تلاتة، واحد تلاتة |
+
+Other Egyptian conventions the module follows: hours are plain cardinals, so
+7:45 is تمانية الا ربع rather than the Modern Standard الساعة الثامنة الا ربع;
+the separator in an address is the borrowed دوت, not نقطة; and a Latin name in
+an email is transliterated, so `ahmed@gmail.com` reads احمد ات جيميل دوت كوم
+rather than being spelled out letter by letter.
+
 ---
 
 ## Roadmap

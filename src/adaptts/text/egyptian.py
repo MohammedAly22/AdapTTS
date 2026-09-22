@@ -206,13 +206,88 @@ def ordinal_to_words(n: int, feminine: bool = False) -> str:
     return number_to_words(n, feminine)
 
 
-def digits_one_by_one(s: str) -> str:
-    """Read a digit string as separate digits, for phone numbers and codes."""
+def digits_one_by_one(s: str, zero: str = "صفر") -> str:
+    """Read a digit string as separate digits, for codes and short sequences."""
     out = []
     for ch in s:
         if ch.isdigit():
-            out.append("صفر" if ch == "0" else ONES[int(ch)])
+            out.append(zero if ch == "0" else ONES[int(ch)])
     return " ".join(out)
+
+
+# Mobile prefixes are read as a number, not as digits: 010 is "زيرو عشرة",
+# never "صفر واحد صفر". The leading zero keeps the borrowed English form زيرو,
+# which is what people actually say when reading a number aloud.
+def _read_prefix(digits: str) -> str:
+    """Read an 01X (or 01X0) mobile prefix the way it is spoken."""
+    return f"زيرو {number_to_words(int(digits[1:]))}"
+
+
+def _group_subscriber(rest: str) -> List[str]:
+    """Split the subscriber digits into the groups a speaker actually uses.
+
+    Eight digits go 3+2+3, seven go 3+2+2. Both keep the familiar
+    three-then-pairs shape. Anything else falls back to even chunks of three.
+    """
+    n = len(rest)
+    if n == 8:
+        sizes = [3, 2, 3]
+    elif n == 7:
+        sizes = [3, 2, 2]
+    elif n == 6:
+        sizes = [3, 3]
+    else:
+        sizes = []
+        left = n
+        while left > 0:
+            take = 3 if left != 4 else 2  # avoid a lonely trailing digit
+            sizes.append(min(take, left))
+            left -= sizes[-1]
+
+    groups, i = [], 0
+    for size in sizes:
+        groups.append(rest[i : i + size])
+        i += size
+    return groups
+
+
+def phone_to_words(digits: str, style: str = "digits") -> str:
+    """Read a phone number the way an Egyptian speaker would.
+
+    Egyptian mobile numbers are 11 digits: an 01X prefix plus 8 subscriber
+    digits. Nobody reads all eleven separately. The prefix is a number
+    (010 -> زيرو عشرة), and the rest is chunked into groups.
+
+    When the fourth digit is 0 the prefix absorbs it, because 0100 is heard as
+    one unit: زيرو مية rather than زيرو عشرة followed by a stray zero.
+
+    ``style`` picks how each group is read. ``"digits"`` names them one by one,
+    which is what most speakers do when the listener is writing it down.
+    ``"numbers"`` reads each group as a whole number, which is faster and just
+    as idiomatic.
+    """
+    digits = "".join(c for c in digits if c.isdigit())
+    if not digits:
+        return ""
+
+    # Not an Egyptian mobile: read it in plain groups of three.
+    if not (digits.startswith("01") and len(digits) == 11):
+        groups = _group_subscriber(digits)
+        return " ، ".join(digits_one_by_one(g, zero="زيرو") for g in groups)
+
+    # 0100... reads as زيرو مية, taking the fourth digit into the prefix.
+    if digits[3] == "0":
+        prefix, rest = digits[:4], digits[4:]
+    else:
+        prefix, rest = digits[:3], digits[3:]
+
+    parts = [_read_prefix(prefix)]
+    for g in _group_subscriber(rest):
+        if style == "numbers":
+            parts.append(number_to_words(int(g)))
+        else:
+            parts.append(digits_one_by_one(g, zero="زيرو"))
+    return " ، ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -235,29 +310,43 @@ def date_to_words(day: int, month: int, year: Optional[int] = None) -> str:
     return " ".join(parts)
 
 
+# Hours are spoken as plain cardinals, not ordinals: 7:45 is "تمانية الا ربع",
+# not "الساعة التامنة الا ربع". The word الساعة appears only when the writer
+# typed it, which _expand_time preserves.
+_HOUR_WORDS = {
+    1: "واحدة", 2: "اتنين", 3: "تلاتة", 4: "اربعة", 5: "خمسة", 6: "ستة",
+    7: "سبعة", 8: "تمانية", 9: "تسعة", 10: "عشرة", 11: "حداشر", 12: "اتناشر",
+}
+
+
 def time_to_words(hour: int, minute: int = 0) -> str:
-    """Read a clock time using the Egyptian fractional expressions."""
+    """Read a clock time using the Egyptian fractional expressions.
+
+    The hour is a plain cardinal. Egyptian speakers say "تمانية الا ربع", not
+    the Modern Standard "الساعة الثامنة الا ربع".
+    """
     hour_12 = hour % 12 or 12
-    hour_names = {
-        1: "الواحدة", 2: "التانية", 3: "التالتة", 4: "الرابعة", 5: "الخامسة",
-        6: "السادسة", 7: "السابعة", 8: "التامنة", 9: "التاسعة", 10: "العاشرة",
-        11: "الحداشر", 12: "التناشر",
-    }
-    base = f"الساعة {hour_names[hour_12]}"
+    base = _HOUR_WORDS[hour_12]
+    nxt = _HOUR_WORDS[(hour_12 % 12) + 1]
+
     if minute == 0:
         return base
     if minute == 15:
         return f"{base} و ربع"
-    if minute == 30:
-        return f"{base} و نص"
-    if minute == 45:
-        nxt = hour_names[(hour_12 % 12) + 1]
-        return f"الساعة {nxt} الا ربع"
     if minute == 20:
         return f"{base} و تلت"
+    if minute == 30:
+        return f"{base} و نص"
     if minute == 40:
-        nxt = hour_names[(hour_12 % 12) + 1]
-        return f"الساعة {nxt} الا تلت"
+        return f"{nxt} الا تلت"
+    if minute == 45:
+        return f"{nxt} الا ربع"
+    if minute == 50:
+        return f"{nxt} الا عشرة"
+    if minute == 55:
+        return f"{nxt} الا خمسة"
+    if minute > 30:
+        return f"{nxt} الا {number_to_words(60 - minute)} دقيقة"
     return f"{base} و {number_to_words(minute)} دقيقة"
 
 
@@ -402,8 +491,81 @@ RE_WS = re.compile(r"\s+")
 # ---------------------------------------------------------------------------
 
 
-def _say_latin_token(token: str) -> str:
-    """Speak a Latin token: known word, known abbreviation, or spelled out."""
+# How phone-number groups are read. "digits" names each digit, which is what
+# speakers do when the listener is writing the number down. "numbers" reads
+# each group as a whole number, which is faster and equally idiomatic.
+# A list so normalize_egyptian can set it per call without a global rebind.
+_PHONE_STYLE = ["digits"]
+
+# Rough Latin-to-Arabic transliteration for names in email addresses.
+# Longest sequences first, so "sh" wins over "s" and "kh" over "k".
+_TRANSLIT: List[Tuple[str, str]] = [
+    ("sch", "ش"), ("tch", "تش"),
+    ("sh", "ش"), ("ch", "تش"), ("kh", "خ"), ("gh", "غ"), ("th", "ث"),
+    ("ph", "ف"), ("ck", "ك"), ("ou", "و"), ("oo", "و"), ("ee", "ي"),
+    ("aa", "ا"), ("ei", "ي"), ("ai", "ي"), ("ay", "اي"), ("ya", "يا"),
+    ("a", "ا"), ("b", "ب"), ("c", "ك"), ("d", "د"), ("e", "ي"), ("f", "ف"),
+    ("g", "ج"), ("h", "ه"), ("i", "ي"), ("j", "ج"), ("k", "ك"), ("l", "ل"),
+    ("m", "م"), ("n", "ن"), ("o", "و"), ("p", "ب"), ("q", "ق"), ("r", "ر"),
+    ("s", "س"), ("t", "ت"), ("u", "و"), ("v", "ف"), ("w", "و"), ("x", "كس"),
+    ("y", "ي"), ("z", "ز"),
+]
+
+# Names common enough in Egyptian addresses that a fixed spelling beats a
+# letter-by-letter guess. Not a pronunciation rule: these are orthographic
+# conventions people already write in Arabic.
+_KNOWN_NAMES: Dict[str, str] = {
+    "ahmed": "احمد", "ahmad": "احمد", "mohamed": "محمد", "mohammed": "محمد",
+    "muhammad": "محمد", "mahmoud": "محمود", "mostafa": "مصطفى",
+    "mustafa": "مصطفى", "omar": "عمر", "ali": "علي", "hassan": "حسن",
+    "hussein": "حسين", "khaled": "خالد", "kareem": "كريم", "karim": "كريم",
+    "youssef": "يوسف", "yousef": "يوسف", "ibrahim": "ابراهيم",
+    "mona": "منى", "sara": "سارة", "nour": "نور", "aya": "اية",
+    "fatma": "فاطمة", "heba": "هبة", "amira": "اميرة", "salma": "سلمى",
+    "tarek": "طارق", "sherif": "شريف", "amr": "عمرو", "ayman": "ايمن",
+    "hany": "هاني", "sameh": "سامح", "wael": "وائل", "yasser": "ياسر",
+    "info": "انفو", "admin": "ادمن", "support": "سبورت", "contact": "كونتاكت",
+    "sales": "سيلز", "hello": "هالو", "mail": "ميل", "test": "تست",
+}
+
+
+def latin_to_arabic(word: str) -> str:
+    """Transliterate a Latin-script name into Arabic letters.
+
+    Used only for the local part of an email address, where a name should be
+    read as a name rather than spelled out. This is orthographic
+    transliteration, not a pronunciation decision: how the resulting Arabic is
+    voiced remains the job of the discovered pronunciation codes.
+    """
+    low = word.lower()
+    if low in _KNOWN_NAMES:
+        return _KNOWN_NAMES[low]
+
+    out = []
+    i = 0
+    while i < len(low):
+        for src, dst in _TRANSLIT:
+            if low.startswith(src, i):
+                out.append(dst)
+                i += len(src)
+                break
+        else:
+            i += 1  # unmappable character, skip it
+    result = "".join(out)
+    # A word cannot begin with a bare long vowel in Arabic orthography.
+    if result.startswith("ي") and len(result) > 1:
+        result = "ا" + result[1:]
+    return result or word
+
+
+def _say_latin_token(token: str, allow_translit: bool = False) -> str:
+    """Speak a Latin token: known word, known abbreviation, name, or letters.
+
+    ``allow_translit`` turns on rough transliteration, used for the local part
+    of an email address. A name written in Latin script is read as a name, so
+    ahmed becomes احمد rather than ايه اتش ام اي دي. Spelling out a person's
+    name letter by letter is not how anyone reads an address aloud.
+    """
     low = token.lower().strip(".")
     if not low:
         return ""
@@ -416,17 +578,19 @@ def _say_latin_token(token: str) -> str:
     # An all-caps short token is an acronym: spell it.
     if token.isupper() and len(token) <= 5:
         return " ".join(LATIN_LETTERS.get(c, c) for c in low if c.isalpha())
+    if allow_translit and len(low) >= 3 and low.isalpha():
+        return latin_to_arabic(low)
     if len(low) <= 3:
         return " ".join(LATIN_LETTERS.get(c, c) for c in low if c.isalpha())
-    # Unknown longer word: spell it rather than guess a transliteration, since a
-    # wrong guess is worse than letters for a TTS front end.
+    # Unknown longer word outside a name position: spell it rather than guess,
+    # since a wrong transliteration is worse than letters for a TTS front end.
     return " ".join(LATIN_LETTERS.get(c, c) for c in low if c.isalpha())
 
 
 def _expand_url(m: re.Match) -> str:
     url = m.group(0)
     body = re.sub(r"^https?://", "", url, flags=re.IGNORECASE)
-    body = re.sub(r"^www\.", "دبليو دبليو دبليو نقطة ", body, flags=re.IGNORECASE)
+    body = re.sub(r"^www\.", "دبليو دبليو دبليو دوت ", body, flags=re.IGNORECASE)
     path = ""
     if "/" in body:
         body, _, path = body.partition("/")
@@ -434,7 +598,7 @@ def _expand_url(m: re.Match) -> str:
     said = []
     for i, p in enumerate(parts):
         if i:
-            said.append("نقطة")
+            said.append("دوت")
         said.append(_say_latin_token(p) if re.match(r"^[A-Za-z]", p) else p)
     out = " ".join(said)
     if path.strip("/"):
@@ -447,13 +611,13 @@ def _expand_url(m: re.Match) -> str:
 def _expand_email(m: re.Match) -> str:
     user, _, domain = m.group(0).partition("@")
     user_said = " ".join(
-        _say_latin_token(p) if p else "" for p in re.split(r"[._+-]", user) if p
+        _say_latin_token(p, allow_translit=True) for p in re.split(r"[._+-]", user) if p
     )
     dom_parts = [p for p in domain.split(".") if p]
     dom_said = []
     for i, p in enumerate(dom_parts):
         if i:
-            dom_said.append("نقطة")
+            dom_said.append("دوت")
         dom_said.append(_say_latin_token(p))
     return f" {user_said} ات {' '.join(dom_said)} "
 
@@ -462,11 +626,6 @@ def _expand_time(m: re.Match) -> str:
     hour, minute = int(m.group(1)), int(m.group(2))
     suffix = (m.group(3) or "").lower()
     out = time_to_words(hour, minute)
-    # The reading already begins with الساعة. If the sentence just said it,
-    # drop ours instead of stuttering.
-    before = m.string[: m.start()].rstrip()
-    if before.endswith("الساعة") and out.startswith("الساعة "):
-        out = out[len("الساعة "):]
     if suffix in ("am", "ص"):
         out += " صباحا"
     elif suffix in ("pm", "م"):
@@ -498,7 +657,7 @@ def _expand_phone(m: re.Match) -> str:
     if not 9 <= len(digits) <= 15:
         return raw
     prefix = "زائد " if raw.strip().startswith("+") else ""
-    return f" {prefix}{digits_one_by_one(digits)} "
+    return f" {prefix}{phone_to_words(digits, _PHONE_STYLE[0])} "
 
 
 def _expand_percent(m: re.Match) -> str:
@@ -623,6 +782,7 @@ def normalize_egyptian(
     expand_latin: bool = True,
     keep_punctuation: bool = True,
     strip_marks: bool = True,
+    phone_style: str = "digits",
 ) -> str:
     """Normalize one line of Egyptian Arabic into speakable words.
 
@@ -635,6 +795,10 @@ def normalize_egyptian(
     if not text.strip():
         return ""
 
+    if phone_style not in ("digits", "numbers"):
+        raise ValueError(f"phone_style must be 'digits' or 'numbers', got {phone_style!r}")
+    _PHONE_STYLE[0] = phone_style
+
     text = normalize_characters(text, strip_marks=strip_marks)
     text = RE_REPEAT.sub(r"\1\1", text)  # "جااااامد" -> "جاامد"
 
@@ -646,8 +810,10 @@ def normalize_egyptian(
 
     # 1. Structured spans first: they contain digits and dots that later rules
     #    would otherwise shred.
-    text = RE_URL.sub(_expand_url, text)
+    # Emails before URLs: the URL pattern matches the domain half of an address,
+    # so running it first consumes gmail.com and orphans the local part.
     text = RE_EMAIL.sub(_expand_email, text)
+    text = RE_URL.sub(_expand_url, text)
     text = RE_TIME.sub(_expand_time, text)
     text = RE_DATE_DMY.sub(_expand_date_dmy, text)
     text = RE_DATE_MY.sub(_expand_date_my, text)
@@ -748,13 +914,15 @@ TEXT_CASES: List[Tuple[str, Sequence[str], Sequence[str]]] = [
     ("المبلغ 876 جنيه", ["تمنمية ستة و سبعين", "جنيه"], ["تمنمية و ستة"]),
     ("السعر 250 ج.م", ["متين خمسين", "جنيه"], ["250"]),
     ("الخصم 25%", ["خمسة و عشرين", "في المية"], ["%", "25"]),
-    ("الساعة 3:30", ["التالتة", "نص"], [":"]),
-    ("الساعة 7:45", ["التامنة", "الا ربع"], []),
+    ("الساعة 3:30", ["تلاتة", "نص"], [":", "التالتة"]),
+    ("الساعة 7:45", ["تمانية", "الا ربع"], ["التامنة"]),
     ("الميعاد 12/5/2024", ["مايو", "الفين اربعة و عشرين"], ["/"]),
-    ("ابعتلي على ahmed@gmail.com", ["ات", "جيميل", "نقطة", "كوم"], ["@"]),
-    ("شوف www.youtube.com", ["يوتيوب", "نقطة", "كوم"], ["www"]),
+    ("ابعتلي على ahmed@gmail.com", ["احمد", "ات", "جيميل", "دوت", "كوم"], ["@", "نقطة"]),
+    ("شوف www.youtube.com", ["يوتيوب", "دوت", "كوم"], ["www", "نقطة"]),
     ("الدكتور د. احمد جه", ["دكتور"], []),
-    ("رقمي 01012345678", ["صفر", "واحد"], ["01012345678"]),
+    ("رقمي 01012345678", ["زيرو عشرة"], ["01012345678", "صفر واحد صفر"]),
+    ("رقمي 01027756313", ["زيرو عشرة", "اتنين سبعة سبعة"], ["01027756313"]),
+    ("رقمي 01002776313", ["زيرو مية"], ["زيرو عشرة"]),
     ("جااااااامد اوي", ["جاامد"], ["جااااااامد"]),
     ("عندي 3.5 كيلو", ["تلاتة", "فاصلة", "خمسة"], ["3.5"]),
     ("من 10 - 20 يوم", ["من", "عشرة", "عشرين"], ["-"]),
@@ -808,6 +976,7 @@ def _run_self_test() -> int:
     hard = [
         "الاجتماع يوم 15/3/2024 الساعة 10:30 ص في قاعة 5",
         "اتصل على 01098765432 او ابعت لـ info@company.com.eg",
+        "رقمي 01116953882 و الميعاد 7:45",
         "الشركة حققت ارباح 2,500,000 جنيه بزيادة 15% عن 2023",
         "د. محمد قال ان 3/4 من الطلاب نجحوا بنسبة 75%",
         "العنوان 25 شارع التحرير الدور ال3 شقة 12 القاهرة",

@@ -83,6 +83,7 @@ def test_ordinals_and_digit_strings():
     assert ordinal_to_words(3) == "التالت"
     assert ordinal_to_words(3, feminine=True) == "التالتة"
     assert digits_one_by_one("102") == "واحد صفر اتنين"
+    assert digits_one_by_one("102", zero="زيرو") == "واحد زيرو اتنين"
 
 
 # --------------------------------------------------------------------------
@@ -91,18 +92,31 @@ def test_ordinals_and_digit_strings():
 
 
 def test_dates_and_times():
+    """Hours are plain cardinals, not ordinals.
+
+    Egyptian speakers say "تمانية الا ربع", not the Modern Standard
+    "الساعة الثامنة الا ربع".
+    """
     assert date_to_words(15, 3, 2024) == "خمستاشر مارس الفين اربعة و عشرين"
-    assert time_to_words(3, 30) == "الساعة التالتة و نص"
-    assert time_to_words(7, 45) == "الساعة التامنة الا ربع"
-    assert time_to_words(1, 15) == "الساعة الواحدة و ربع"
-    assert time_to_words(12, 0) == "الساعة التناشر"
+    assert time_to_words(3, 30) == "تلاتة و نص"
+    assert time_to_words(7, 45) == "تمانية الا ربع"
+    assert time_to_words(1, 15) == "واحدة و ربع"
+    assert time_to_words(12, 0) == "اتناشر"
+    assert time_to_words(8, 20) == "تمانية و تلت"
+    assert time_to_words(10, 40) == "حداشر الا تلت"
 
 
-def test_time_does_not_stutter_when_the_sentence_says_it():
-    """"الساعة 3:30" must not become "الساعة الساعة التالتة"."""
+def test_time_says_alsaaa_only_once():
+    """الساعة appears only where the writer typed it."""
     out = normalize_egyptian("الساعة 3:30")
     assert out.count("الساعة") == 1, out
-    assert "التالتة" in out and "نص" in out
+    assert "تلاتة" in out and "نص" in out
+    # And the ordinal form must not come back.
+    assert "التالتة" not in out, out
+
+    bare = normalize_egyptian("نتقابل 7:45")
+    assert "الساعة" not in bare, bare
+    assert "تمانية الا ربع" in bare, bare
 
 
 # --------------------------------------------------------------------------
@@ -141,8 +155,8 @@ def test_fractions_use_the_plural_denominator():
 
 def test_urls_and_emails():
     out = normalize_egyptian("شوف www.youtube.com")
-    assert "يوتيوب" in out and "نقطة" in out and "كوم" in out
-    assert "www" not in out
+    assert "يوتيوب" in out and "دوت" in out and "كوم" in out
+    assert "www" not in out and "نقطة" not in out
 
     out = normalize_egyptian("ابعت على ahmed@gmail.com")
     assert "ات" in out and "جيميل" in out
@@ -155,10 +169,48 @@ def test_percent_and_currency():
     assert "جنيه" in normalize_egyptian("السعر 250 ج.م")
 
 
-def test_phone_numbers_are_read_digit_by_digit():
+def test_phone_numbers_are_grouped_not_spelled_out():
+    """Egyptian mobile numbers are read in groups, with the prefix as a number.
+
+    Nobody reads all eleven digits separately. 010 is "زيرو عشرة", and the
+    eight subscriber digits break 3+2+3.
+    """
+    from adaptts.text.egyptian import phone_to_words
+
+    assert phone_to_words("01027756313") == (
+        "زيرو عشرة ، اتنين سبعة سبعة ، خمسة ستة ، تلاتة واحد تلاتة"
+    )
+    assert phone_to_words("01116953882").startswith("زيرو حداشر")
+    # A fourth digit of 0 is absorbed into the prefix: 0100 -> زيرو مية.
+    assert phone_to_words("01002776313").startswith("زيرو مية")
+    assert "زيرو عشرة" not in phone_to_words("01002776313")
+
+    # The prefix must never be spelled out digit by digit.
     out = normalize_egyptian("رقمي 01012345678")
-    assert out.count("صفر") >= 2, out
+    assert "زيرو عشرة" in out, out
+    assert "صفر واحد صفر" not in out, out
     assert not any(c.isdigit() for c in out)
+
+
+def test_phone_groups_can_be_read_as_numbers():
+    from adaptts.text.egyptian import phone_to_words
+
+    out = phone_to_words("01027756313", style="numbers")
+    assert out.startswith("زيرو عشرة")
+    assert "متين سبعة و سبعين" in out, out
+
+
+def test_email_uses_dot_and_reads_names_as_names():
+    """دوت, the borrowed word, not the Arabic نقطة. And a name is a name."""
+    out = normalize_egyptian("ابعتلي على ahmed@gmail.com")
+    assert "احمد" in out, out
+    assert "ات" in out and "جيميل" in out and "دوت" in out, out
+    assert "نقطة" not in out, out
+    # The old behaviour spelled the name out letter by letter.
+    assert "ايه اتش ام" not in out, out
+
+    multi = normalize_egyptian("ابعت لـ mohamed.ali@company.com")
+    assert "محمد" in multi and "علي" in multi, multi
 
 
 # --------------------------------------------------------------------------
