@@ -202,6 +202,10 @@ python tests/test_models.py       # causality, KV cache, masking
 python tests/test_integration.py  # the real pipeline, synthetic data
 ```
 
+Every stage was run end to end on a GTX 1660 Ti against the real dataset.
+[VERIFICATION.md](VERIFICATION.md) records the measured timings, what the run
+proved, what it did not, and the six bugs it exposed.
+
 ### Two experiments, two configs
 
 | Config | Dataset | Size | Purpose |
@@ -316,6 +320,7 @@ slot rather than in the weights.
 
 ```
 ARCHITECTURE.md              the design and the reasoning behind it
+VERIFICATION.md              measured results from a real end-to-end run
 configs/
   base.yaml                  every tunable, documented
   exp0_small.yaml            small dataset, consumer GPU

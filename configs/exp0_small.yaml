@@ -7,6 +7,20 @@
 #
 # Sized for a 6 GB consumer GPU (GTX 1660 Ti).
 #
+# MEASURED on that card, end to end:
+#   manifest + parquet extraction   1m 20s
+#   CTC forced alignment            9m 15s   (22497 spans, 1.7% dropped)
+#   span embeddings + discovery     3m 30s   (9 ambiguous word types found)
+#   teacher cache                      21s
+#   Mimi codec encoding             1m 19s
+#   context encoder, 1500 steps     1m 06s   (22.6 steps/s, 80 MB)
+#   acoustic model                  ~4.2 s/step at batch 32
+#
+# The acoustic stage is the slow one: a 1660 Ti has no bf16 and weak fp16
+# throughput, so budget roughly 4-5 hours for 4000 steps. That is enough to
+# hear whether audio is forming, which is the point of exp0. Use a rented
+# Ampere card (or newer) for a run you intend to listen to critically.
+#
 # A note on precision: torch reports is_bf16_supported() == True on Turing, but
 # that is emulation, not hardware. Turing (compute 7.5) has no bf16 tensor
 # cores, so bf16 there is slower than fp16 and buys nothing. Hence fp16 with a
