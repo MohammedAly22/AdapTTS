@@ -39,7 +39,10 @@ teacher:
   dtype: float16
 
 align:
-  model_id: jonatasgrosman/wav2vec2-large-xlsr-53-arabic
+  # MMS forced aligner: ships safetensors (transformers 5.x refuses .bin
+  # checkpoints unless torch >= 2.6), covers Arabic, and its CTC vocabulary is
+  # romanized, which the aligner handles by transliterating the transcript.
+  model_id: MahmoudAshraf/mms-300m-1130-forced-aligner
   batch_size: 8
   chunk_seconds: 20.0
   min_word_seconds: 0.08

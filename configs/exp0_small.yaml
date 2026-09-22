@@ -5,10 +5,13 @@
 #
 #   dataset: OmarAhmedSobhy/tts-egyption-dataset  (parquet, 2013 rows)
 #
-# Sized for a 6 GB consumer GPU (GTX 1660 Ti). That card is Turing, which has
-# no bf16 support and poor fp16 matmul throughput, so precision is fp16 with a
-# gradient scaler and the batch is small. On an Ampere or newer card, switch
-# train.precision to bf16 and raise the batch size.
+# Sized for a 6 GB consumer GPU (GTX 1660 Ti).
+#
+# A note on precision: torch reports is_bf16_supported() == True on Turing, but
+# that is emulation, not hardware. Turing (compute 7.5) has no bf16 tensor
+# cores, so bf16 there is slower than fp16 and buys nothing. Hence fp16 with a
+# gradient scaler. On Ampere or newer (compute >= 8.0), switch
+# train.precision to bf16 and raise train.batch_size.
 
 _base_: base.yaml
 

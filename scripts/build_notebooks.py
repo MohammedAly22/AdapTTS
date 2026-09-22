@@ -78,15 +78,45 @@ print("probe  :", " ".join(PROBE_WORDS))
 
 NB00 = [
     md("""
-# 00 - Environment setup (RunPod)
+# 00 - Environment setup
 
-Run this once per pod. It installs dependencies, checks the GPU, runs the test
-suite, and pre-downloads the pretrained models so later notebooks never stall
-mid-run.
+Run this once per machine or pod. It checks the GPU, verifies the environment,
+runs the test suite, and pre-downloads the pretrained models so later notebooks
+never stall mid-run.
 
-Expected total: about 5 minutes plus roughly 4 GB of downloads.
+## Creating the environment (shell, once)
+
+```bash
+conda create -n adaptts python=3.11 -y
+conda activate adaptts
+
+# CUDA build of PyTorch. cu121 works on Turing (GTX 16xx) through Ada (4090).
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+pip install -r requirements.txt
+python -m ipykernel install --user --name adaptts --display-name "AdapTTS (conda)"
+```
+
+Then pick the **AdapTTS (conda)** kernel in Jupyter before running anything
+below. The first cell prints which interpreter you are actually on, so a
+wrong-kernel mistake shows up immediately rather than as a confusing import
+error later.
+
+Expected: about 5 minutes plus roughly 4 GB of model downloads.
 """),
     code("!nvidia-smi"),
+    code("""
+import sys, os
+
+print("interpreter:", sys.executable)
+print("python     :", sys.version.split()[0])
+in_conda = "adaptts" in sys.executable.lower() or os.environ.get("CONDA_DEFAULT_ENV") == "adaptts"
+print("env        :", os.environ.get("CONDA_DEFAULT_ENV", "(none)"))
+if not in_conda:
+    print()
+    print("WARNING: this does not look like the adaptts environment.")
+    print("Select the 'AdapTTS (conda)' kernel from the kernel picker.")
+"""),
     code("""
 import os, sys
 REPO = os.path.abspath(os.path.join(os.getcwd(), "..")) if os.path.basename(os.getcwd()) == "notebooks" else os.getcwd()
@@ -96,23 +126,61 @@ os.environ["PYTHONIOENCODING"] = "utf-8"
 print("repo:", REPO)
 """),
     md("""
-## Install dependencies
+## Verify dependencies
 
-PyTorch is normally preinstalled on RunPod images, so this only fills gaps.
+If anything is missing here, run the pip commands from the shell block above in
+a terminal, then restart the kernel.
 """),
-    code("!pip install -q -r requirements.txt"),
     code("""
-import torch, transformers, numpy
+import importlib
 
-print("torch       ", torch.__version__)
-print("transformers", transformers.__version__)
-print("numpy       ", numpy.__version__)
-print("cuda        ", torch.cuda.is_available())
-if torch.cuda.is_available():
+required = [
+    ("torch", "torch"), ("torchaudio", "torchaudio"), ("transformers", "transformers"),
+    ("numpy", "numpy"), ("scipy", "scipy"), ("soundfile", "soundfile"),
+    ("pyarrow", "pyarrow"), ("yaml", "pyyaml"), ("tqdm", "tqdm"),
+    ("tensorboard", "tensorboard"), ("huggingface_hub", "huggingface_hub"),
+]
+missing = []
+for mod, pkg in required:
+    try:
+        m = importlib.import_module(mod)
+        print(f"  ok      {pkg:<18} {getattr(m, '__version__', '')}")
+    except ImportError:
+        missing.append(pkg)
+        print(f"  MISSING {pkg}")
+if missing:
+    raise SystemExit("install these first: pip install " + " ".join(missing))
+"""),
+    code("""
+import torch
+
+print("torch:", torch.__version__, "| cuda available:", torch.cuda.is_available())
+if not torch.cuda.is_available():
+    print()
+    print("No GPU visible. Training will run, but very slowly.")
+else:
     p = torch.cuda.get_device_properties(0)
-    print("gpu         ", p.name)
-    print(f"memory       {p.total_memory / 1024 ** 3:.1f} GB")
-    print("bf16         ", torch.cuda.is_bf16_supported())
+    cc = p.major + p.minor / 10
+    print(f"gpu     : {p.name}")
+    print(f"memory  : {p.total_memory / 1024 ** 3:.1f} GB")
+    print(f"compute : {p.major}.{p.minor}")
+    print()
+    # torch reports is_bf16_supported() True on Turing, but that is emulation,
+    # not hardware. Only Ampere and newer have bf16 tensor cores.
+    if cc >= 8.0:
+        print("Ampere or newer: use train.precision = bf16 (no gradient scaler needed).")
+        print("  -> configs/exp1_egyptian.yaml is already set up this way.")
+    else:
+        print("Turing or older: NO hardware bf16, despite what torch reports.")
+        print("Use train.precision = fp16 with a gradient scaler.")
+        print("  -> configs/exp0_small.yaml is already set up this way.")
+    if p.total_memory / 1024 ** 3 < 10:
+        print()
+        print("Under 10 GB: start with configs/exp0_small.yaml.")
+    x = torch.randn(1024, 1024, device="cuda")
+    torch.cuda.synchronize()
+    print()
+    print("GPU matmul check:", bool(torch.isfinite((x @ x).sum())))
 """),
     md("""
 ## Run the test suite
@@ -125,10 +193,11 @@ controlled corpus. All must pass before you spend GPU time.
 import subprocess, sys, os
 
 tests = [
-    "tests/test_models.py",
-    "tests/test_data.py",
-    "tests/test_end_to_end.py",
-    "tests/test_integration.py",
+    "tests/test_egyptian.py",     # text normalization, the waw rule
+    "tests/test_models.py",       # causality, KV cache, masking
+    "tests/test_data.py",         # collation, bucketing, config
+    "tests/test_end_to_end.py",   # does it actually learn to disambiguate
+    "tests/test_integration.py",  # the real pipeline on synthetic data
 ]
 env = dict(os.environ, PYTHONIOENCODING="utf-8")
 for t in tests:
@@ -144,6 +213,13 @@ for t in tests:
 print()
 print("All tests passed. The code is ready to train.")
 """),
+    md("""
+## Check the Egyptian text normalizer
+
+This runs its own suite. The headline rule: no linking waw between magnitude
+groups, so 2024 is "الفين اربعة و عشرين", never "الفين و اربعة و عشرين".
+"""),
+    code("!python src/adaptts/text/egyptian.py"),
     md("""
 ## Pre-download the pretrained models
 """),

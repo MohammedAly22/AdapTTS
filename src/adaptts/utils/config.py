@@ -125,7 +125,7 @@ class TeacherConfig:
 class AlignConfig:
     """CTC forced alignment settings."""
 
-    model_id: str = "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
+    model_id: str = "MahmoudAshraf/mms-300m-1130-forced-aligner"
     batch_size: int = 8
     chunk_seconds: float = 20.0
     min_word_seconds: float = 0.08
