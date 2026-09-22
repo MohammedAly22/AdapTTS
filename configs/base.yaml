@@ -1,0 +1,153 @@
+# AdapTTS base configuration.
+#
+# Experiment configs inherit from this with `_base_: base.yaml` and override
+# only what differs. Unknown keys are rejected at load time, so a typo fails
+# immediately rather than after an hour of training.
+
+name: base
+
+paths:
+  root: runs/base
+  dataset_dir: data/masri100h
+  cache_dir: cache/base
+  hf_dataset_id: ehabnegm/100-hour-Egyptian-dataset-single-speaker
+
+audio:
+  sample_rate: 24000
+  codec_sample_rate: 24000
+  ssl_sample_rate: 16000
+  frame_rate: 12.5          # Mimi
+  n_quantizers: 8
+  codebook_size: 2048
+  min_duration: 1.0
+  max_duration: 18.0
+
+text:
+  max_chars: 320
+  max_words: 72
+  lowercase_latin: true
+  strip_diacritics: true
+  normalize_alef: false     # keep hamza forms: they can disambiguate readings
+  normalize_digits: true
+
+teacher:
+  model_id: UBC-NLP/MARBERTv2
+  layers: [8, 9, 10, 11]
+  hidden_size: 768
+  max_length: 256
+  batch_size: 64
+  dtype: float16
+
+align:
+  model_id: jonatasgrosman/wav2vec2-large-xlsr-53-arabic
+  batch_size: 8
+  chunk_seconds: 20.0
+  min_word_seconds: 0.08
+  max_word_seconds: 2.5
+  score_threshold: -3.5
+
+spanemb:
+  model_id: facebook/wav2vec2-large-xlsr-53
+  layers: [6, 7, 8, 9]      # middle layers carry phonetic identity
+  batch_size: 8
+  context_pad: 0.02
+  dim: 1024
+
+discovery:
+  min_word_freq: 12
+  max_codes_per_word: 4
+  n_bootstrap: 24
+  bootstrap_frac: 0.8
+  stability_threshold: 0.72
+  silhouette_threshold: 0.10
+  min_separation: 0.55
+  pca_dim: 48
+  min_cluster_frac: 0.12
+  random_seed: 1234
+  max_occurrences_per_word: 600
+
+context_encoder:
+  d_model: 256
+  n_layers: 4
+  n_heads: 4
+  d_ff: 768
+  dropout: 0.1
+  max_codes: 4
+  distill_weight: 1.0
+  distill_temperature: 2.0
+  ce_weight: 1.0
+  difficulty_weight: 0.3
+  label_smoothing: 0.02
+
+acoustic:
+  # Sized for ~68 h of single-speaker data. d512/ff2048 reaches 84M parameters,
+  # which overfits this corpus; d384/ff1536 keeps 12 layers (so all three exit
+  # depths stay meaningful) at about 56M.
+  d_model: 384
+  n_layers: 12
+  n_heads: 6
+  d_ff: 1536
+  dropout: 0.1
+  depth_d_model: 256
+  depth_n_layers: 4
+  depth_n_heads: 4
+  text_d_model: 256
+  text_n_layers: 4
+  text_n_heads: 4
+  speaker_dim: 192
+  pc_embed_dim: 64
+  exit_layers: [4, 8, 12]
+  exit_loss_weights: [0.3, 0.6, 1.0]
+  layerdrop: 0.0
+  self_distill_weight: 1.0
+  duration_weight: 0.5
+  cfg_dropout: 0.1
+  monotonic_prior_weight: 1.0
+  rvq_loss_weights: [4.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+optim:
+  lr: 3.0e-4
+  min_lr_ratio: 0.05
+  betas: [0.9, 0.95]
+  weight_decay: 0.01
+  grad_clip: 1.0
+  warmup_steps: 1000
+  max_steps: 120000
+  accum_steps: 1
+  fused: true
+
+train:
+  batch_size: 32
+  eval_batch_size: 32
+  num_workers: 6
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 4
+  precision: bf16
+  compile: true
+  compile_mode: default
+  seed: 42
+  log_every: 50
+  eval_every: 2000
+  save_every: 5000
+  sample_every: 5000
+  keep_last_n: 3
+  bucket_boundaries: [32, 64, 96, 128, 160, 200, 240]
+  max_eval_batches: 50
+  resume: ""
+
+inference:
+  temperature: 0.7
+  top_k: 50
+  top_p: 0.95
+  cfg_scale: 1.6
+  tau_low: 0.15
+  tau_high: 0.45
+  force_depth: 0            # 0 = adaptive
+  max_frames_ratio: 1.6
+  min_frames_ratio: 0.6
+  repetition_window: 12
+  repetition_max_repeats: 3
+  seed: 0
+
+codec_model_id: kyutai/mimi

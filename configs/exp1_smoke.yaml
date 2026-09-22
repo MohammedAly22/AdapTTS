@@ -1,0 +1,45 @@
+# A fast end-to-end shakedown config: tiny model, few steps.
+# Use it to prove the whole pipeline runs before paying for a real GPU run.
+
+_base_: exp1_egyptian.yaml
+
+name: exp1_smoke
+
+paths:
+  root: runs/smoke
+  cache_dir: cache/smoke
+
+context_encoder:
+  d_model: 128
+  n_layers: 2
+  n_heads: 4
+  d_ff: 256
+
+acoustic:
+  d_model: 128
+  n_layers: 4
+  n_heads: 4
+  d_ff: 256
+  text_d_model: 64
+  text_n_layers: 2
+  text_n_heads: 4
+  depth_d_model: 64
+  depth_n_layers: 2
+  depth_n_heads: 4
+  exit_layers: [2, 4]
+  exit_loss_weights: [0.5, 1.0]
+
+optim:
+  max_steps: 60
+  warmup_steps: 5
+
+train:
+  batch_size: 4
+  num_workers: 0
+  persistent_workers: false
+  compile: false
+  log_every: 10
+  eval_every: 30
+  save_every: 60
+  sample_every: 1000000
+  max_eval_batches: 2

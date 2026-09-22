@@ -1,0 +1,24 @@
+# Data and generated artefacts
+data/
+cache/
+runs/
+*.wav
+*.npy
+*.pt
+*.ckpt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+venv/
+.venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+!assets/*.json

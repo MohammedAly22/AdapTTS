@@ -1,0 +1,61 @@
+{
+  "_comment": "Homograph probe set rendered to TensorBoard during training. Each pair shares an orthographic form but differs in reading, so listening to a pair tells you immediately whether disambiguation works. The 'expected' field is documentation for the human listener; it is never used as a label and never reaches the model.",
+  "sentences": [
+    {
+      "tag": "3alam_flag",
+      "text": "انا شوفت علم مصر بيرفرف",
+      "focus": "علم",
+      "expected": "عَلَم",
+      "gloss": "flag"
+    },
+    {
+      "tag": "3ilm_science",
+      "text": "علم الفيزيا من اهم العلوم البشرية",
+      "focus": "علم",
+      "expected": "عِلْم",
+      "gloss": "science"
+    },
+    {
+      "tag": "masr_egypt",
+      "text": "مصر عندها امكانيات و موارد كتير جدا",
+      "focus": "مصر",
+      "expected": "مَصْر",
+      "gloss": "Egypt"
+    },
+    {
+      "tag": "musirr_insisting",
+      "text": "انا كنت مصر على الراي بتاعي لحد النهاية",
+      "focus": "مصر",
+      "expected": "مُصِرّ",
+      "gloss": "insisting"
+    },
+    {
+      "tag": "dowal_countries",
+      "text": "الدول دي بتتنافس على السوق العالمي",
+      "focus": "الدول",
+      "expected": "الدِوَل",
+      "gloss": "countries"
+    },
+    {
+      "tag": "dool_these",
+      "text": "الناس دول شايفين نفسهم احسن من غيرهم",
+      "focus": "دول",
+      "expected": "دُول",
+      "gloss": "these (colloquial)"
+    },
+    {
+      "tag": "multi_homograph",
+      "text": "انا كنت مصر على ان مصر عندها امكانيات تخليها تتفوق على دول من اللي شايفين نفسهم دول",
+      "focus": "مصر / دول",
+      "expected": "مُصِرّ ... مَصْر ... الدِوَل ... دُول",
+      "gloss": "the full stress-test sentence: four ambiguous tokens, two word types"
+    },
+    {
+      "tag": "easy_control",
+      "text": "الجو النهارده حلو جدا و الشمس طالعة",
+      "focus": "none",
+      "expected": "no ambiguity",
+      "gloss": "control: should route to the shallow exit and sound clean"
+    }
+  ]
+}

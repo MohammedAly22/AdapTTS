@@ -1,0 +1,35 @@
+# Experiment 1: Egyptian Arabic, single speaker, homograph disambiguation.
+#
+# This is the experiment the whole design is aimed at: prove the model picks the
+# right reading of an ambiguous word from context alone, with no diacritics.
+#
+# To run a different dataset, change paths.dataset_dir and paths.cache_dir.
+# Nothing else needs to move.
+
+_base_: base.yaml
+
+name: exp1_egyptian_homograph
+
+paths:
+  root: runs/exp1
+  dataset_dir: data/masri100h
+  cache_dir: cache/exp1
+
+# 68 h of a single narrator. The acoustic model is sized for this: bigger
+# overfits, smaller loses codec detail.
+acoustic:
+  # Inherits d384/L12/ff1536 from base.yaml (about 56M parameters).
+  exit_layers: [4, 8, 12]
+  exit_loss_weights: [0.3, 0.6, 1.0]
+
+optim:
+  lr: 3.0e-4
+  warmup_steps: 1000
+  max_steps: 90000
+
+train:
+  batch_size: 32
+  precision: bf16
+  compile: true
+  eval_every: 2000
+  sample_every: 5000

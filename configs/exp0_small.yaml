@@ -1,0 +1,88 @@
+# Experiment 0: hypothesis check on a small dataset.
+#
+# Purpose: prove the whole pipeline runs end to end and produces real audio,
+# on a 2013-clip / ~2 GB corpus, before spending money on the 100-hour set.
+#
+#   dataset: OmarAhmedSobhy/tts-egyption-dataset  (parquet, 2013 rows)
+#
+# Sized for a 6 GB consumer GPU (GTX 1660 Ti). That card is Turing, which has
+# no bf16 support and poor fp16 matmul throughput, so precision is fp16 with a
+# gradient scaler and the batch is small. On an Ampere or newer card, switch
+# train.precision to bf16 and raise the batch size.
+
+_base_: base.yaml
+
+name: exp0_small_egyptian
+
+paths:
+  root: runs/exp0
+  dataset_dir: data/egy_small
+  cache_dir: cache/exp0
+  hf_dataset_id: OmarAhmedSobhy/tts-egyption-dataset
+
+text:
+  # This dataset ships two transcript columns. "text" is the raw ASR output;
+  # "cohere_text" is the cleaned one, which is what we want to speak.
+  parquet_text_column: cohere_text
+  use_egyptian_normalizer: true
+  max_chars: 320
+  max_words: 72
+
+audio:
+  min_duration: 1.0
+  max_duration: 15.0
+
+discovery:
+  # A 2000-clip corpus sees each word far fewer times than 68 hours does, so
+  # the frequency floor has to come down or nothing is testable at all. The
+  # statistical gates below stay strict, so lowering this widens the search
+  # without weakening the evidence required to declare a homograph.
+  min_word_freq: 6
+  min_cluster_frac: 0.15
+  max_occurrences_per_word: 400
+  n_bootstrap: 16
+
+context_encoder:
+  d_model: 192
+  n_layers: 3
+  n_heads: 4
+  d_ff: 512
+
+acoustic:
+  # Smaller than exp1: a 2 GB corpus cannot support 56M parameters.
+  d_model: 256
+  n_layers: 8
+  n_heads: 4
+  d_ff: 1024
+  depth_d_model: 192
+  depth_n_layers: 3
+  depth_n_heads: 4
+  text_d_model: 192
+  text_n_layers: 3
+  text_n_heads: 4
+  exit_layers: [3, 5, 8]
+  exit_loss_weights: [0.3, 0.6, 1.0]
+
+optim:
+  lr: 3.0e-4
+  warmup_steps: 300
+  max_steps: 12000
+
+train:
+  # fp16 + scaler: the 1660 Ti has no bf16. Keep workers low on Windows, where
+  # each worker re-imports torch and spawning is expensive.
+  precision: fp16
+  batch_size: 8
+  eval_batch_size: 8
+  num_workers: 2
+  compile: false          # Triton has no Windows wheel for this torch build
+  log_every: 20
+  eval_every: 500
+  save_every: 1000
+  sample_every: 1000
+  max_eval_batches: 20
+  bucket_boundaries: [32, 64, 96, 128, 160, 200]
+
+inference:
+  temperature: 0.7
+  cfg_scale: 1.5
