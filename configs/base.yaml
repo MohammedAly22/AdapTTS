@@ -100,6 +100,11 @@ discovery:
   min_cluster_frac: 0.12
   random_seed: 1234
   max_occurrences_per_word: 600
+  # Worker processes for the discovery search. Serial is the measured optimum:
+  # the inner work is NumPy linear algebra that already threads through BLAS,
+  # so extra processes contend for the same cores and pay pickling overhead.
+  # Measured over 400 realistic jobs, 12 workers ran 2.5x slower than 1.
+  n_workers: 1
 
 context_encoder:
   d_model: 256

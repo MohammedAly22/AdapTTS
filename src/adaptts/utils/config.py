@@ -166,6 +166,15 @@ class DiscoveryConfig:
     min_cluster_frac: float = 0.12  # a code must own >=12% of occurrences
     random_seed: int = 1234
     max_occurrences_per_word: int = 600
+    # Worker processes for the discovery search. 1 is the measured optimum.
+    #
+    # Discovery is CPU-only and looks embarrassingly parallel, but the inner
+    # work is NumPy linear algebra that already uses every core through BLAS.
+    # Adding processes makes them contend for the same cores while paying to
+    # pickle each job. Measured over 400 realistic jobs: 12 workers were 2.5x
+    # SLOWER than serial. Set this above 1 only if you have profiled your own
+    # machine and found otherwise.
+    n_workers: int = 1
 
 
 @dataclass

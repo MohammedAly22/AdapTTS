@@ -618,6 +618,71 @@ class OccurrenceRecord:
     row: int  # index into the span-embedding memmap
 
 
+def _discovery_params(cfg: Config) -> dict:
+    """Flatten the discovery settings into a picklable dict for the workers."""
+    d = cfg.discovery
+    return {
+        "max_codes": d.max_codes_per_word,
+        "n_bootstrap": d.n_bootstrap,
+        "bootstrap_frac": d.bootstrap_frac,
+        "stability_threshold": d.stability_threshold,
+        "silhouette_threshold": d.silhouette_threshold,
+        "min_separation": d.min_separation,
+        "min_cluster_frac": d.min_cluster_frac,
+        "max_duration_confound": d.max_duration_confound,
+        "pca_dim": d.pca_dim,
+        "seed": d.random_seed,
+    }
+
+
+def _discover_one(args: tuple) -> Tuple[str, Optional[WordCodes]]:
+    """Discover the codes for one word type. Runs inside a worker process.
+
+    Defined at module level so it survives pickling on spawn-based platforms.
+    Each call receives its own feature block, so workers share no state.
+    """
+    word, feats, durs, params = args
+    wc = discover_word_codes(
+        word, feats,
+        durations=durs,
+        max_codes=params["max_codes"],
+        n_bootstrap=params["n_bootstrap"],
+        bootstrap_frac=params["bootstrap_frac"],
+        stability_threshold=params["stability_threshold"],
+        silhouette_threshold=params["silhouette_threshold"],
+        min_separation=params["min_separation"],
+        min_cluster_frac=params["min_cluster_frac"],
+        max_duration_confound=params["max_duration_confound"],
+        pca_dim=params["pca_dim"],
+        seed=params["seed"],
+    )
+    return word, (wc if wc.n_codes > 1 else None)
+
+
+def _build_job(
+    cfg: Config,
+    word: str,
+    idxs: Sequence[int],
+    occurrences: Sequence[OccurrenceRecord],
+    embeddings: np.ndarray,
+    rng: np.random.Generator,
+    params: dict,
+) -> tuple:
+    """Gather one word's features and durations into a self-contained job."""
+    d = cfg.discovery
+    sel = list(idxs)
+    if len(sel) > d.max_occurrences_per_word:
+        sel = list(rng.choice(sel, size=d.max_occurrences_per_word, replace=False))
+    feats = np.asarray(
+        embeddings[[occurrences[i].row for i in sel]], dtype=np.float32
+    )
+    durs = np.array(
+        [occurrences[i].end_sec - occurrences[i].start_sec for i in sel],
+        dtype=np.float64,
+    )
+    return (word, feats, durs, params)
+
+
 def discover_pronunciation_codes(
     cfg: Config,
     occurrences: Sequence[OccurrenceRecord],
@@ -628,19 +693,24 @@ def discover_pronunciation_codes(
 
     Returns the lexicon and a mapping ``(uid, word_index) -> code``, which is
     the supervision the context encoder trains on.
+
+    Word types are independent, so the search runs across worker processes.
+    This stage uses no GPU, and on a rented pod the CPU cores would otherwise
+    sit idle behind a single-threaded loop.
     """
     path = Path(cfg.paths.lexicon_path)
+    d = cfg.discovery
+
     by_word: Dict[str, List[int]] = defaultdict(list)
     for i, occ in enumerate(occurrences):
         by_word[occ.word].append(i)
 
-    d = cfg.discovery
     if path.exists() and not force:
         lex = PronunciationLexicon.load(path)
         logger.info("discovery: reusing lexicon with %d entries", len(lex))
     else:
         rng = np.random.default_rng(d.random_seed)
-        entries: Dict[str, WordCodes] = {}
+        params = _discovery_params(cfg)
         candidates = [
             (w, ix) for w, ix in sorted(by_word.items()) if len(ix) >= d.min_word_freq
         ]
@@ -648,39 +718,58 @@ def discover_pronunciation_codes(
             "A3 discovery: %d word types seen, %d frequent enough to test (>= %d uses)",
             len(by_word), len(candidates), d.min_word_freq,
         )
-        bar = progress(candidates, desc="A3 discovering codes", unit="word")
-        for word, idxs in bar:
-            sel = idxs
-            if len(sel) > d.max_occurrences_per_word:
-                sel = list(rng.choice(idxs, size=d.max_occurrences_per_word, replace=False))
-            feats = embeddings[[occurrences[i].row for i in sel]]
-            durs = np.array(
-                [occurrences[i].end_sec - occurrences[i].start_sec for i in sel],
-                dtype=np.float64,
-            )
-            wc = discover_word_codes(
-                word, feats,
-                durations=durs,
-                max_duration_confound=d.max_duration_confound,
-                max_codes=d.max_codes_per_word,
-                n_bootstrap=d.n_bootstrap,
-                bootstrap_frac=d.bootstrap_frac,
-                stability_threshold=d.stability_threshold,
-                silhouette_threshold=d.silhouette_threshold,
-                min_separation=d.min_separation,
-                min_cluster_frac=d.min_cluster_frac,
-                pca_dim=d.pca_dim,
-                seed=d.random_seed,
-            )
-            if wc.n_codes > 1:
-                entries[word] = wc
-                bar.set_postfix(ambiguous=len(entries))
+
+        n_workers = d.n_workers if d.n_workers > 0 else (os.cpu_count() or 1)
+        n_workers = max(1, min(n_workers, max(1, len(candidates))))
+
+        # Largest words first: one with 600 occurrences costs far more than one
+        # with 12, and starting those early stops a straggler from setting the
+        # wall time.
+        ordered = sorted(candidates, key=lambda wi: -len(wi[1]))
+        entries: Dict[str, WordCodes] = {}
+
+        if n_workers > 1 and len(ordered) > 1:
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+
+            logger.info("A3 discovery: %d worker processes", n_workers)
+            with ProcessPoolExecutor(max_workers=n_workers) as pool:
+                futures = {
+                    pool.submit(
+                        _discover_one,
+                        _build_job(cfg, w, ix, occurrences, embeddings, rng, params),
+                    ): w
+                    for w, ix in ordered
+                }
+                bar = progress(
+                    total=len(futures), desc="A3 discovering codes", unit="word"
+                )
+                for fut in as_completed(futures):
+                    word = futures[fut]
+                    try:
+                        _, wc = fut.result()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("discovery failed for %s: %s", word, exc)
+                    else:
+                        if wc is not None:
+                            entries[word] = wc
+                            bar.set_postfix(ambiguous=len(entries))
+                    bar.update(1)
+                bar.close()
+        else:
+            bar = progress(ordered, desc="A3 discovering codes", unit="word")
+            for word, idxs in bar:
+                _, wc = _discover_one(
+                    _build_job(cfg, word, idxs, occurrences, embeddings, rng, params)
+                )
+                if wc is not None:
+                    entries[word] = wc
+                    bar.set_postfix(ambiguous=len(entries))
+
         lex = PronunciationLexicon(entries, d.max_codes_per_word)
         lex.save(path)
-        n_amb = len(lex.ambiguous_words)
         logger.info(
             "discovery: %d word types examined, %d found ambiguous -> %s",
-            len(by_word), n_amb, path,
+            len(by_word), len(lex.ambiguous_words), path,
         )
 
     # Assign every occurrence of every ambiguous word to a code.
