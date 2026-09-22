@@ -86,6 +86,26 @@ words went from 12 to 9.
 spawned dataloader workers, and `binary_cross_entropy` is rejected under fp16
 autocast. Both fixed.
 
+**7. The difficulty head collapsed to zero.** Found by running inference
+against the trained context encoder: a word whose posterior entropy was 0.99,
+meaning maximum uncertainty for a two-way choice, received a predicted
+difficulty of 0.0018.
+
+The loss averaged over every word in the batch, and on real text more than 95%
+of words are unambiguous with a target of exactly 0, so predicting 0 everywhere
+is near-optimal. The difficulty loss now trains on ambiguous words only.
+
+This one mattered beyond the metric. Difficulty selects the acoustic model's
+exit depth, so a collapsed head would have routed every sentence to the
+shallowest exit regardless of how hard it was, silently disabling the
+adaptive-compute mechanism while every loss curve still looked healthy.
+
+## A note on running two jobs at once
+
+On a 6 GB card, do not. The acoustic run holds 4.9 GB, so starting a second
+training process leaves too little headroom and both stall against each other
+rather than queueing cleanly. Run one stage at a time.
+
 ## Measured performance notes
 
 The dataloader is not a bottleneck. At batch 32 it delivers 543 batches/s with

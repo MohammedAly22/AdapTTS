@@ -100,7 +100,12 @@ train:
   # launch-bound rather than compute-bound.
   batch_size: 32
   eval_batch_size: 16
-  num_workers: 2
+  # Measured on Windows: the memmap dataloader delivers 543 batches/s with zero
+  # workers, 327 with two and 242 with four. Workers only add spawn overhead
+  # here because there is no decoding left to parallelize. On Linux, 4 to 6
+  # workers are still worth it for the larger exp1 cache.
+  num_workers: 0
+  persistent_workers: false
   compile: false          # Triton has no Windows wheel for this torch build
   log_every: 20
   eval_every: 500
