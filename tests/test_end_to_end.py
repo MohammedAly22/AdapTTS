@@ -358,7 +358,23 @@ def test_smoke_config_is_loadable_and_consistent():
     assert max(cfg.teacher.layers) < 12
 
     full = load_config(root / "configs" / "exp1_egyptian.yaml")
-    assert full.acoustic.n_layers == 12 and full.optim.max_steps == 90000
+    # Assert internal consistency rather than literal values, which change as
+    # the budget is retuned. What must hold: enough steps to matter, and an
+    # effective batch the learning-rate schedule was tuned for.
+    assert full.acoustic.n_layers >= 8
+    assert full.optim.max_steps >= 10000
+    effective = full.train.batch_size * full.optim.accum_steps
+    assert 16 <= effective <= 128, f"effective batch {effective} is out of range"
+    # The duration cap must exceed the longest clip, or data is silently lost.
+    assert full.audio.max_duration >= 19.0, (
+        f"max_duration {full.audio.max_duration} is below the Masri corpus max of 19.0s"
+    )
+    # Buckets must reach the longest sequence the cap allows.
+    max_frames = full.audio.max_duration * full.audio.frame_rate
+    assert full.train.bucket_boundaries[-1] >= max_frames * 0.9, (
+        f"buckets end at {full.train.bucket_boundaries[-1]} but clips reach "
+        f"{max_frames:.0f} frames"
+    )
 
 
 def test_probe_sentences_are_wellformed():

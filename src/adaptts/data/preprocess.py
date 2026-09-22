@@ -272,6 +272,7 @@ def build_manifest(cfg: Config, force: bool = False) -> List[Utterance]:
 
     utts: List[Utterance] = []
     skipped = defaultdict(int)
+    durations_seen: List[float] = []
     for r in progress(rows, desc="building manifest", unit="utt"):
         rel = r.get("file_name") or r.get("audio_path") or r.get("path")
         if not rel:
@@ -316,6 +317,7 @@ def build_manifest(cfg: Config, force: bool = False) -> List[Utterance]:
 
             info = sf.info(str(apath))
             dur = info.frames / info.samplerate
+        durations_seen.append(dur)
         if not (cfg.audio.min_duration <= dur <= cfg.audio.max_duration):
             skipped["duration"] += 1
             continue
@@ -338,7 +340,20 @@ def build_manifest(cfg: Config, force: bool = False) -> List[Utterance]:
         )
 
     if not utts:
-        raise RuntimeError(f"manifest is empty after filtering; skipped={dict(skipped)}")
+        lines = [
+            "every utterance was filtered out.",
+            f"  reasons: {dict(skipped)}",
+        ]
+        if durations_seen:
+            arr = np.array(durations_seen)
+            lines += [
+                f"  corpus durations: min {arr.min():.1f}s  "
+                f"median {float(np.median(arr)):.1f}s  max {arr.max():.1f}s",
+                f"  your window:      {cfg.audio.min_duration:.1f}s to "
+                f"{cfg.audio.max_duration:.1f}s",
+                "  widen audio.min_duration / audio.max_duration to cover the corpus.",
+            ]
+        raise RuntimeError(chr(10).join(lines))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
@@ -360,6 +375,45 @@ def build_manifest(cfg: Config, force: bool = False) -> List[Utterance]:
     if skipped:
         logger.info("skipped during filtering:")
         log_table(logger, ["reason", "count"], sorted(skipped.items()))
+
+    # Losing a large share of a corpus is almost always a misconfigured filter,
+    # not a property of the data. Say so loudly: a duration cap below the
+    # corpus median once discarded 71% of the Masri set while the run still
+    # reported success.
+    total_seen = len(utts) + sum(skipped.values())
+    kept_frac = len(utts) / max(total_seen, 1)
+    if kept_frac < 0.9 and total_seen:
+        worst = max(skipped.items(), key=lambda kv: kv[1])
+        logger.warning("")
+        logger.warning("=" * 68)
+        logger.warning(
+            "KEPT ONLY %.0f%% OF THE CORPUS (%d of %d clips)",
+            100 * kept_frac, len(utts), total_seen,
+        )
+        logger.warning("largest cause: %s (%d clips)", worst[0], worst[1])
+        if worst[0] == "duration":
+            logger.warning("")
+            logger.warning(
+                "Your audio.min_duration / audio.max_duration window is cutting "
+                "real data."
+            )
+            logger.warning(
+                "Current window: %.1f s to %.1f s", cfg.audio.min_duration,
+                cfg.audio.max_duration,
+            )
+            if durations_seen:
+                arr = np.array(durations_seen)
+                logger.warning(
+                    "Corpus durations: min %.1f  median %.1f  max %.1f",
+                    arr.min(), float(np.median(arr)), arr.max(),
+                )
+                logger.warning(
+                    "Set audio.max_duration above %.1f to keep everything.",
+                    arr.max(),
+                )
+        logger.warning("=" * 68)
+        logger.warning("")
+
     return utts
 
 

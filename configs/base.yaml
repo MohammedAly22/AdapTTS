@@ -20,7 +20,12 @@ audio:
   n_quantizers: 8
   codebook_size: 2048
   min_duration: 1.0
-  max_duration: 18.0
+  # Keep this ABOVE the longest clip in your corpus, or you silently discard
+  # data. The Masri-100h set has a median of 18.46 s and a max of 19.0 s, so a
+  # cap of 18.0 dropped 11122 of 15653 clips and left 14.4 hours of the 68.
+  # Check your own distribution before lowering it:
+  #   python -c "import json;d=[json.loads(l) for l in open('cache/<exp>/manifest.jsonl',encoding='utf-8')];import numpy as np;x=np.array([r['duration'] for r in d]);print(x.min(),np.median(x),x.max())"
+  max_duration: 20.0
 
 text:
   max_chars: 320

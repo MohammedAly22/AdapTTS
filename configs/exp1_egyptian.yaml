@@ -25,9 +25,16 @@ acoustic:
 optim:
   lr: 3.0e-4
   warmup_steps: 1000
-  # 90k steps at batch 32 is about 195 epochs over the 68-hour corpus, which
-  # is the right order for an autoregressive codec language model. On a 4090
-  # expect roughly 0.6-1.0 s/step, so 15-25 hours.
+  # Effective batch 12 x 3 = 36, close to the 32 the schedule was tuned for.
+  accum_steps: 3
+  # 50k optimizer steps at an effective batch of 36 is about 120 epochs over
+  # the 68-hour corpus, which is the right order for an autoregressive codec
+  # language model. Each optimizer step is 3 forward passes at batch 12, so on
+  # a 4090 budget roughly 0.5-1.0 s per optimizer step: 7 to 14 hours.
+  #
+  # Raise this if acc_q0 is still climbing at the end; the cosine schedule
+  # anneals to min_lr_ratio, so a run that ends early simply ends undertrained
+  # rather than broken.
   #
   # WHAT TO EXPECT, by coarse-level accuracy (train/acc_q0 in TensorBoard):
   #   below 0.15   noise with the right speaker timbre
@@ -39,11 +46,22 @@ optim:
   # Those bands come from the level-0 code entropy of 9.27 bits measured on
   # this data. If acc_q0 has stalled below 0.15 after 5000 steps, stop and
   # investigate rather than waiting; something is wrong.
-  max_steps: 90000
+  max_steps: 50000
 
 train:
-  batch_size: 32
+  # Masri clips average 16.5 s, so a batch is 32 x ~206 frames rather than the
+  # short sequences exp0 sees. Measured on a 24 GB card: batch 16 needs 9.9 GB
+  # and batch 32 runs out of memory. Batch 12 with 3 accumulation steps gives
+  # an effective batch of 36 while staying near 8 GB, which also leaves room
+  # for the longest clips.
+  #
+  # On an 80 GB A100, batch 32 with accum_steps 1 fits comfortably.
+  batch_size: 12
+  eval_batch_size: 12
   precision: bf16
   compile: true
   eval_every: 2000
   sample_every: 5000
+  # Bucketing must reach the longest clips or they all land in one oversized
+  # bucket. 19 s at 12.5 Hz is 237 frames.
+  bucket_boundaries: [48, 80, 112, 144, 176, 208, 240]

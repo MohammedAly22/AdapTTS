@@ -91,7 +91,7 @@ class AudioConfig:
     n_quantizers: int = 8
     codebook_size: int = 2048
     min_duration: float = 1.0
-    max_duration: float = 18.0
+    max_duration: float = 20.0  # must exceed the longest clip in the corpus
 
 
 @dataclass
