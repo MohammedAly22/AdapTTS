@@ -339,22 +339,47 @@ class WordCodes:
 def _fit_projection(
     feats: np.ndarray, dim: int
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return ``(z, projection, mean, scale)`` for reproducible re-projection.
+    """Project to ``dim`` principal components, and return the basis to reuse.
 
-    Note on scaling: we deliberately do **not** whiten per component. Per
-    component whitening divides every principal direction by its own standard
-    deviation, which rescales a genuine between-reading axis down to the same
-    magnitude as a pure noise axis and destroys exactly the separation we are
-    trying to measure. Instead we apply a single global scale, which preserves
-    the relative geometry while keeping distances in a numerically sane range.
+    The span embeddings are wide: about 600 rows of 1024 dimensions, of which
+    we keep 48. A full SVD decomposes all 1024 directions and discards most of
+    them, and profiling showed it accounting for 93% of a discovery call.
+
+    For a wide matrix the principal directions follow from the n x n Gram
+    matrix rather than the d x d covariance. ``eigh`` on the Gram matrix is
+    2.4x faster and agrees with the SVD projection to about 1e-14.
+
+    (Randomized SVD is faster still, roughly 10x, but was rejected: its
+    relative error in the pairwise distances the gates consume was 41%.)
+
+    Note on scaling: we deliberately do **not** whiten per component. Dividing
+    each principal direction by its own standard deviation rescales a genuine
+    between-reading axis down to the magnitude of a noise axis, destroying the
+    separation the gates measure. A single global scale preserves the geometry.
     """
     n, d = feats.shape
     k = int(min(dim, d, max(1, n - 1)))
     mean = feats.mean(axis=0)
-    xc = feats - mean[None, :]
-    _, s, vt = np.linalg.svd(xc, full_matrices=False)
-    projection = vt[:k]
-    proj = xc @ projection.T
+    xc = np.ascontiguousarray(feats - mean[None, :], dtype=np.float64)
+
+    if n <= d:
+        # Wide matrix: eigendecompose the small (n x n) Gram matrix.
+        gram = xc @ xc.T
+        evals, evecs = np.linalg.eigh(gram)          # ascending
+        order = np.argsort(evals)[::-1][:k]
+        evals = np.maximum(evals[order], 0.0)
+        evecs = evecs[:, order]
+        sv = np.sqrt(evals)                           # singular values
+        # Right singular vectors: V = X^T U / s, the basis new points project on.
+        safe = np.where(sv > 1e-12, sv, 1.0)
+        projection = (xc.T @ evecs / safe[None, :]).T  # [k, d]
+        proj = evecs * sv[None, :]                     # == xc @ projection.T
+    else:
+        # Tall matrix: the ordinary SVD is already the cheaper route.
+        _, sv_all, vt = np.linalg.svd(xc, full_matrices=False)
+        projection = vt[:k]
+        proj = xc @ projection.T
+
     # One shared scale for all components: preserves geometry, normalizes units.
     global_scale = float(np.sqrt((proj**2).sum(axis=1).mean())) + 1e-8
     scale = np.full(k, global_scale, dtype=np.float64)

@@ -10,13 +10,12 @@ money on the acoustic model.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
