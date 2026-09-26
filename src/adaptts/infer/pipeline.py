@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from ..text.diacritics import ReadingLexicon
+from ..text.diacritics import N_VARIANTS, ReadingLexicon
 from ..models.acoustic import AcousticModel
 from ..models.context_encoder import ContextEncoder
 from ..text.normalize import normalize_text, tokenize_words
@@ -518,9 +518,28 @@ class AdapTTS:
                 max_codes=cfg.discovery.max_codes_per_word,
                 pc_embed_dim=cfg.acoustic.pc_embed_dim,
                 exit_layers=cfg.acoustic.exit_layers, pad_id=vocab.pad_id,
+                n_variants=N_VARIANTS,
             )
             sd = torch.load(apath, map_location="cpu", weights_only=False)
-            ac.load_state_dict(sd["model"])
+            try:
+                ac.load_state_dict(sd["model"])
+            except RuntimeError as exc:
+                # Almost always a checkpoint from an earlier architecture: the
+                # depth transformer was replaced by ParallelDepthHead and the
+                # model shrank from 56M to 27M, so every shape differs. The raw
+                # error is two hundred lines of mismatches that bury the cause.
+                raise RuntimeError(
+                    f"the acoustic checkpoint at {apath} does not match the "
+                    f"current architecture or config.\n\n"
+                    f"This is usually a checkpoint from an earlier run: the "
+                    f"depth transformer was replaced and the model resized, so "
+                    f"the weights are not loadable.\n\n"
+                    f"Move it aside and retrain:\n"
+                    f"  mv {Path(apath).parent} {Path(apath).parent}_OLD\n\n"
+                    f"To inspect a plan without synthesising audio, the acoustic "
+                    f"model is not needed at all.\n\n"
+                    f"first mismatch: {str(exc).splitlines()[1].strip() if len(str(exc).splitlines()) > 1 else exc}"
+                ) from None
             ac = ac.to(dev)
 
         codec = None
