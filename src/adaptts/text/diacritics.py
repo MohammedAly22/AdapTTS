@@ -180,6 +180,26 @@ def clean_marks(pairs: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     if len(out) >= 2 and out[0][0] == "\u0627" and out[1][0] == "\u0644":
         out[1] = (out[1][0], "")
 
+    # 4. Taa marbuta takes no vowel of its own, and the mark on the letter
+    #    before it is a case ending. CATT flips these freely: وَصْفَه vs وَصْفُه,
+    #    عَمَلُه vs عَمَلَه, قَبِيلَه vs قَبِيلُه are the same word each time.
+    #    Egyptian speech drops case endings, so none of this is contrastive.
+    # Both \u0629 and \u0647 are checked: the text normalizer folds \u0629 to \u0647, so by this
+    # point most feminine endings are spelled with heh.
+    if out and out[-1][0] in ("\u0629", "\u0647"):
+        out[-1] = (out[-1][0], "")
+        if len(out) >= 2:
+            # The mark on the letter before a final \u0629/\u0647 is a case ending, and
+            # shadda there is gemination CATT applies inconsistently
+            # (\u0645\u0650\u064a\u0629 vs \u0645\u0650\u064a\u064e\u0651\u0629). Neither is contrastive in Egyptian.
+            out[-2] = (out[-2][0], "")
+
+    # 5. Shadda on the final cluster. Gemination is phonemic in general, which
+    #    is why it survives elsewhere, but CATT is inconsistent about it at the
+    #    very end of a word (مِية vs مِيَّة) where Egyptian does not contrast it.
+    if len(out) >= 2 and SHADDA in out[-1][1]:
+        out[-1] = (out[-1][0], out[-1][1].replace(SHADDA, ""))
+
     return out
 
 

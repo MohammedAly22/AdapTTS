@@ -107,8 +107,20 @@ def test_case_ending_is_ignored():
     assert vowel_pattern("مَصْرِ") == vowel_pattern("مَصْرْ") == vowel_pattern("مَصْرُ")
 
 
-def test_shadda_is_preserved_because_doubling_is_phonemic():
-    assert vowel_pattern("مُصِرِّ") != vowel_pattern("مُصِرِ")
+def test_shadda_is_phonemic_except_at_the_word_end():
+    """Gemination contrasts inside a word, but not on the final letter.
+
+    CATT applies word-final shadda inconsistently (مِية vs مِيَّة) and Egyptian
+    does not contrast it there, so it is suppressed in that one position. The
+    مصر pair still separates, which is what actually matters: it does so on the
+    interior vowels, not on the final shadda.
+    """
+    # Interior gemination is kept.
+    assert vowel_pattern("مُعَلِّمْ") != vowel_pattern("مُعَلِمْ")
+    # Word-final gemination is not contrastive and is ignored.
+    assert vowel_pattern("مُصِرِّ") == vowel_pattern("مُصِرِ")
+    # The homograph it belongs to still separates.
+    assert vowel_pattern("مَصْرِ") != vowel_pattern("مُصِرِّ")
 
 
 def test_clean_marks_never_empties_a_word():
