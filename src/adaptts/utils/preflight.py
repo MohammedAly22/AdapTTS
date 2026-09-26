@@ -17,7 +17,19 @@ def check_preprocessing(cfg: Config, *, need_codes: bool, need_teacher: bool) ->
     required: List[Tuple[Path, str, str]] = [
         (Path(cfg.paths.manifest_path), "manifest", "--stage manifest"),
         (Path(cfg.paths.charvocab_path), "character vocabulary", "--stage manifest"),
-        (Path(cfg.paths.lexicon_path), "discovered pronunciation codes", "--stage discover"),
+        # The reading lexicon, not the retired clustering table. Labels come
+        # from the diacritizer now, so pronunciation_codes.json is never
+        # written and checking for it blocks training on a complete cache.
+        (
+            Path(cfg.paths.reading_lexicon_path),
+            "pronunciation readings",
+            "--stage discover",
+        ),
+        (
+            Path(cfg.paths.cache_dir) / "code_labels.json",
+            "per-occurrence reading labels",
+            "--stage discover",
+        ),
     ]
     if need_codes:
         required.append(
