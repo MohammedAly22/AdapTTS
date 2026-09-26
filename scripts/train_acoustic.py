@@ -202,6 +202,71 @@ def resolve_codes(ctx_encoder, inp, cfg, device) -> torch.Tensor:
     return pc
 
 
+class EarlyStopper:
+    """Halt training once evaluation loss stops improving.
+
+    The previous run spent its last three hours past the point where eval loss
+    began rising. Patience is counted in evaluations rather than steps so the
+    behaviour does not change when eval_every does.
+    """
+
+    def __init__(self, patience: int, min_delta: float) -> None:
+        self.patience = patience
+        self.min_delta = min_delta
+        self.best = float("inf")
+        self.best_step = 0
+        self.bad = 0
+
+    def update(self, loss: float, step: int) -> bool:
+        """Record an evaluation. Returns True when training should stop."""
+        if self.patience <= 0:
+            return False
+        if loss < self.best - self.min_delta:
+            self.best, self.best_step, self.bad = loss, step, 0
+            return False
+        self.bad += 1
+        return self.bad >= self.patience
+
+    def status(self) -> str:
+        return (
+            f"best {self.best:.4f} at step {self.best_step}, "
+            f"{self.bad}/{self.patience} evals without improvement"
+        )
+
+
+def check_exit_ordering(metrics: dict, logger) -> None:
+    """Warn when a shallow exit beats the deepest one.
+
+    Each exit is trained by distillation from the deepest, so the deepest should
+    always be the best. When it is not, the model is memorizing and the extra
+    depth is doing harm. The failed run ended at ce_exit0 = 4.14 against
+    ce_exit2 = 4.41 and reported it as a normal metric.
+    """
+    ces = sorted(
+        (k, v) for k, v in metrics.items() if k.startswith("eval/ce_exit")
+    )
+    if len(ces) < 2:
+        return
+    shallow, deep = ces[0][1], ces[-1][1]
+    if deep > shallow + 1e-6:
+        logger.warning("")
+        logger.warning("=" * 68)
+        logger.warning(
+            "OVERFIT WARNING: the deepest exit (%.4f) is WORSE than the "
+            "shallowest (%.4f).", deep, shallow,
+        )
+        logger.warning(
+            "Every exit is distilled from the deepest, so this ordering means "
+            "the model has more capacity than the data supports."
+        )
+        logger.warning(
+            "Consider a smaller acoustic.d_model / n_layers, or stop here and "
+            "use the best checkpoint."
+        )
+        logger.warning("=" * 68)
+        logger.warning("")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Train the AdapTTS acoustic model")
     ap.add_argument("--config", required=True)
@@ -297,6 +362,9 @@ def main() -> None:
     if resume:
         step = CheckpointManager.load(Path(resume), model, optimizer)
 
+    stopper = EarlyStopper(
+        cfg.train.early_stop_patience, cfg.train.early_stop_min_delta
+    )
     probe = HomographProbe(cfg, vocab, lexicon, device)
     model = maybe_compile(model, cfg)
     model.train()
@@ -309,7 +377,8 @@ def main() -> None:
     bar = progress(total=cfg.optim.max_steps, desc="training acoustic model",
                    unit="step")
     bar.update(step)
-    while step < cfg.optim.max_steps:
+    should_stop = False
+    while step < cfg.optim.max_steps and not should_stop:
         train_loader.batch_sampler.set_epoch(epoch)
         for batch in train_loader:
             if step >= cfg.optim.max_steps:
@@ -372,15 +441,32 @@ def main() -> None:
 
             if step % cfg.train.eval_every == 0:
                 em = evaluate(model, dev_loader, cfg, device, cfg.train.max_eval_batches)
+                eval_loss = em.get("eval/loss", float("nan"))
                 logger.info(
-                    "step %d: eval loss %.4f  coarse-level accuracy %.4f",
-                    step, em.get("eval/loss", float("nan")),
-                    em.get("eval/acc_q0", float("nan")),
+                    "step %d: eval loss %.4f  coarse-level accuracy %.4f  (%s)",
+                    step, eval_loss, em.get("eval/acc_q0", float("nan")),
+                    stopper.status(),
                 )
                 for k, v in em.items():
                     writer.add_scalar(k, v, step)
+                check_exit_ordering(em, logger)
                 ckpt.save(model, optimizer, step, cfg,
-                          {**em, "monitor": em.get("eval/loss")})
+                          {**em, "monitor": eval_loss})
+
+                if stopper.update(float(eval_loss), step):
+                    logger.info("")
+                    logger.info("=" * 68)
+                    logger.info(
+                        "EARLY STOP at step %d: eval loss has not improved for "
+                        "%d evaluations.", step, stopper.patience,
+                    )
+                    logger.info(
+                        "Best was %.4f at step %d; that checkpoint is saved as "
+                        "best.pt.", stopper.best, stopper.best_step,
+                    )
+                    logger.info("=" * 68)
+                    should_stop = True
+                    break
 
             if step % cfg.train.sample_every == 0:
                 probe.run(getattr(model, "_orig_mod", model), ctx_encoder, writer, step)

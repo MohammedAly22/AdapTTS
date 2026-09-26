@@ -120,23 +120,31 @@ context_encoder:
   label_smoothing: 0.02
 
 acoustic:
-  # Sized for ~68 h of single-speaker data. d512/ff2048 reaches 84M parameters,
-  # which overfits this corpus; d384/ff1536 keeps 12 layers (so all three exit
-  # depths stay meaningful) at about 56M.
-  d_model: 384
-  n_layers: 12
-  n_heads: 6
-  d_ff: 1536
+  # Sized from evidence, not taste. A 150k-step run at d384/L12 (56M) ended
+  # with ce_exit0 = 4.14 BEATING ce_exit2 = 4.41: the deepest exit was worse
+  # than the shallowest, which only happens when a model has more capacity
+  # than the data can fill. Eval loss also turned upward around step 100k.
+  #
+  # d320/L8 is about 27M, trains faster, overfits later, and measured
+  # real-time factor 0.11 on CPU against 0.14 for the larger model.
+  d_model: 320
+  n_layers: 8
+  n_heads: 5
+  d_ff: 1280
   dropout: 0.1
-  depth_d_model: 256
+  # The depth predictor now runs once per frame rather than once per RVQ
+  # level. See models/depth_head.py: the per-level transformer made 32
+  # module calls per frame and was 72-80% of CPU inference time.
+  parallel_depth: true
+  depth_d_model: 192
   depth_n_layers: 4
   depth_n_heads: 4
-  text_d_model: 256
-  text_n_layers: 4
+  text_d_model: 192
+  text_n_layers: 3
   text_n_heads: 4
   speaker_dim: 192
   pc_embed_dim: 64
-  exit_layers: [4, 8, 12]
+  exit_layers: [3, 5, 8]
   exit_loss_weights: [0.3, 0.6, 1.0]
   layerdrop: 0.0
   self_distill_weight: 1.0
@@ -175,6 +183,12 @@ train:
   bucket_boundaries: [32, 64, 96, 128, 160, 200, 240]
   max_eval_batches: 50
   resume: ""
+  # Stop when eval loss has not improved for this many evaluations. The failed
+  # run kept going for 50000 steps after the loss turned upward, which is three
+  # hours of GPU time spent making the model worse. 0 disables the check.
+  early_stop_patience: 8
+  # Ignore improvements smaller than this, so noise does not reset the counter.
+  early_stop_min_delta: 0.002
 
 inference:
   temperature: 0.7

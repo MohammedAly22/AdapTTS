@@ -18,8 +18,8 @@ paths:
 # 68 h of a single narrator. The acoustic model is sized for this: bigger
 # overfits, smaller loses codec detail.
 acoustic:
-  # Inherits d384/L12/ff1536 from base.yaml (about 56M parameters).
-  exit_layers: [4, 8, 12]
+  # Inherits d320/L8/ff1280 from base.yaml, about 27M parameters.
+  exit_layers: [3, 5, 8]
   exit_loss_weights: [0.3, 0.6, 1.0]
 
 optim:
@@ -65,3 +65,4 @@ train:
   # Bucketing must reach the longest clips or they all land in one oversized
   # bucket. 19 s at 12.5 Hz is 237 frames.
   bucket_boundaries: [48, 80, 112, 144, 176, 208, 240]
+  early_stop_patience: 8

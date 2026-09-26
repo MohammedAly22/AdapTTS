@@ -198,20 +198,26 @@ class ContextEncoderConfig:
 class AcousticConfig:
     """RVQ code language model."""
 
-    d_model: int = 384
-    n_layers: int = 12
-    n_heads: int = 6
-    d_ff: int = 1536
+    d_model: int = 320
+    n_layers: int = 8
+    n_heads: int = 5
+    d_ff: int = 1280
     dropout: float = 0.1
-    depth_d_model: int = 256
+    # Predict all RVQ levels from the backbone state in one shot instead of
+    # running a transformer once per level. The per-level version made 32
+    # module calls per frame and was 72-80% of CPU inference, dispatch-bound
+    # rather than compute-bound. Measured 4.8x faster to generate, 7.6x
+    # faster in the training forward, with half the parameters.
+    parallel_depth: bool = True
+    depth_d_model: int = 192
     depth_n_layers: int = 4
     depth_n_heads: int = 4
-    text_d_model: int = 256
-    text_n_layers: int = 4
+    text_d_model: int = 192
+    text_n_layers: int = 3
     text_n_heads: int = 4
     speaker_dim: int = 192
     pc_embed_dim: int = 64
-    exit_layers: Tuple[int, ...] = (4, 8, 12)
+    exit_layers: Tuple[int, ...] = (3, 5, 8)
     layerdrop: float = 0.0
     self_distill_weight: float = 1.0
     exit_loss_weights: Tuple[float, ...] = (0.3, 0.6, 1.0)
@@ -254,6 +260,11 @@ class TrainConfig:
     bucket_boundaries: Tuple[int, ...] = (32, 64, 96, 128, 160, 200, 240)
     max_eval_batches: int = 50
     resume: str = ""
+    # Halt when eval loss has not improved for this many evaluations.
+    # The failed run spent three hours training past the point where the
+    # loss turned upward. 0 disables the check.
+    early_stop_patience: int = 8
+    early_stop_min_delta: float = 0.002
 
 
 @dataclass

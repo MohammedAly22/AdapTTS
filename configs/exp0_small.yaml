@@ -73,17 +73,18 @@ context_encoder:
 
 acoustic:
   # Smaller than exp1: a 2 GB corpus cannot support 56M parameters.
-  d_model: 256
-  n_layers: 8
+  d_model: 224
+  n_layers: 6
   n_heads: 4
-  d_ff: 1024
-  depth_d_model: 192
-  depth_n_layers: 3
+  d_ff: 896
+  parallel_depth: true
+  depth_d_model: 160
+  depth_n_layers: 2
   depth_n_heads: 4
-  text_d_model: 192
-  text_n_layers: 3
+  text_d_model: 160
+  text_n_layers: 2
   text_n_heads: 4
-  exit_layers: [3, 5, 8]
+  exit_layers: [2, 4, 6]
   exit_loss_weights: [0.3, 0.6, 1.0]
 
 optim:
