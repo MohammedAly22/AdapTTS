@@ -618,8 +618,27 @@ def report_readings(cfg: Config, lexicon) -> None:
             ex = "  ".join(f"{x}({n})" for x, n in zip(e.examples, e.counts))
             f.write(f"{e.word:<18}{e.n_codes:>9}{e.total:>7}  {ex}\n")
 
+    # The majority baseline: what accuracy you get by always predicting a
+    # word's most common reading. The context encoder must BEAT this, or it has
+    # learned nothing beyond the prior. Measured once before this check
+    # existed: the model scored 67.9% against a 68.3% baseline.
+    total = sum(sum(e.counts) for e in rows)
+    majority = sum(max(e.counts) for e in rows)
+    baseline = 100 * majority / max(total, 1)
+
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(f"\n\nmajority baseline: {baseline:.1f}%\n")
+        f.write("The context encoder must beat this to be worth training on.\n")
+
     logger.info("reading report -> %s", path)
     logger.info("%d word types have more than one reading", len(words))
+    logger.info("")
+    logger.info("MAJORITY BASELINE: %.1f%%", baseline)
+    logger.info(
+        "eval/code_acc from the context encoder must EXCEED this, or the "
+        "labels are noise and the model has only learned the prior."
+    )
+    logger.info("")
     for e in rows[:15]:
         ex = "  ".join(f"{x}({n})" for x, n in zip(e.examples, e.counts))
         logger.info("  %s: %d readings  %s", e.word, e.n_codes, ex)
