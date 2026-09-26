@@ -306,7 +306,28 @@ elif not os.path.isfile(CATT_PY):
     print("or set CATT_PY to its python.")
 else:
     ckpt = os.path.join(CATT_ROOT, "catt_tashkeel", "checkpoints", "eca_model_weights.pt")
-    print("eca checkpoint:", "found" if os.path.isfile(ckpt) else "MISSING")
+    # Size, not just existence. A part-transferred checkpoint is present and
+    # then fails inside torch.load with "pickle data was truncated", which reads
+    # like a code fault instead of an upload that stopped early. Browser uploads
+    # of a 74 MB file truncate often enough to be worth checking here.
+    EXPECTED = 78_059_891
+    if not os.path.isfile(ckpt):
+        ok = False
+        print("eca checkpoint: MISSING")
+    else:
+        size = os.path.getsize(ckpt)
+        if size != EXPECTED:
+            ok = False
+            print(f"eca checkpoint: WRONG SIZE {size:,} bytes, expected {EXPECTED:,}")
+            print(f"  short by {EXPECTED - size:,} bytes - the upload did not finish.")
+            print("  Re-transfer with scp or huggingface-cli, then check:")
+            print("    md5sum should be 4fc95acd1d70d7b372f94cb40b0b4339")
+        else:
+            print(f"eca checkpoint: {size:,} bytes (size verified)")
+
+if ok:
+    # Only worth probing once the file is known to be complete: otherwise this
+    # fails inside torch.load and buries the real cause in a traceback.
     probe = (
         "import sys; sys.path.insert(0, %r); sys.path.insert(0, 'scripts')\\n"
         "from diacritize import load_eca_model\\n"

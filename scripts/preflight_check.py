@@ -359,8 +359,18 @@ def main() -> None:
                 f"ECA checkpoint missing at {ckpt}. This is the one weights "
                 f"file the pipeline needs; the MSA one is not used."
             )
-        mb = os.path.getsize(ckpt) / 1e6
-        return f"{root}\neca_model_weights.pt {mb:.0f} MB"
+        # Size, not just existence. A part-transferred checkpoint exists and
+        # then fails inside torch.load with "pickle data was truncated", which
+        # looks like a code bug rather than an upload that stopped early.
+        expected = 78_059_891
+        actual = os.path.getsize(ckpt)
+        if actual != expected:
+            raise RuntimeError(
+                f"eca_model_weights.pt is {actual:,} bytes, expected "
+                f"{expected:,}. Re-transfer it; a browser upload of a 74 MB "
+                f"file often truncates. md5 4fc95acd1d70d7b372f94cb40b0b4339"
+            )
+        return f"{root}\neca_model_weights.pt {actual:,} bytes (size verified)"
 
     @check("diacritize.py builds the ECA model without MSA weights")
     def _catt_loader():

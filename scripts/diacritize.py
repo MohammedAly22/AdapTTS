@@ -64,6 +64,25 @@ def load_eca_model(catt_root: str, verbose: bool = False):
             "This is the one weights file the pipeline needs."
         )
 
+    # Size check before the load. A part-uploaded checkpoint fails inside
+    # torch.load with "pickle data was truncated", which reads like a code fault
+    # rather than a transfer that stopped early. Checking existence alone is not
+    # enough: the file is there, it is simply incomplete.
+    EXPECTED_BYTES = 78_059_891
+    actual = os.path.getsize(ckpt)
+    if actual != EXPECTED_BYTES:
+        short = EXPECTED_BYTES - actual
+        raise SystemExit(
+            f"ECA checkpoint is the wrong size: {actual:,} bytes, "
+            f"expected {EXPECTED_BYTES:,} "
+            f"({'missing ' + format(short, ',') + ' bytes' if short > 0 else 'larger than expected'})\n"
+            f"  {ckpt}\n\n"
+            "An incomplete upload is the usual cause; browser uploads of a 74 MB\n"
+            "file are unreliable. Re-transfer it with scp or huggingface-cli and\n"
+            "confirm the size matches before rerunning.\n"
+            "Expected md5: 4fc95acd1d70d7b372f94cb40b0b4339"
+        )
+
     if catt_root not in sys.path:
         sys.path.insert(0, catt_root)
 
