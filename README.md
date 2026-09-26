@@ -202,6 +202,10 @@ python tests/test_models.py       # causality, KV cache, masking
 python tests/test_integration.py  # the real pipeline, synthetic data
 ```
 
+**Start here:** [PIPELINE.md](PIPELINE.md) is the current end-to-end guide. It
+explains what the first 150k-step run got wrong, what changed, and the cheap
+checkpoint that tests the whole hypothesis for about fifty cents.
+
 **Renting a GPU?** [RUNPOD.md](RUNPOD.md) covers the workflow, what to run in a
 terminal versus a notebook, expected training milestones, and the cheap
 checkpoint that tests the central hypothesis for under a dollar. Run
@@ -342,6 +346,7 @@ slot rather than in the weights.
 
 ```
 ARCHITECTURE.md              the design and the reasoning behind it
+PIPELINE.md                  current end-to-end guide, and what the first run taught
 VERIFICATION.md              measured results from a real end-to-end run
 RUNPOD.md                    rented-GPU workflow, milestones, costs
 configs/

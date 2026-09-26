@@ -40,100 +40,90 @@ below exists to manufacture that supervision from the data itself.
 
 ---
 
-## 1. The central idea: Pronunciation Codes discovered from audio
-
-The audio *contains* the answer. When the narrator says عَلَم, the acoustics
-carry /ʕalam/; when they say عِلْم, they carry /ʕilm/. The label is not in the
-text, it is in the waveform. We recover it.
+## 1. The central idea: Pronunciation Codes
 
 **Pronunciation Code (PC)**: for each orthographic word type `w`, a small
-discrete set of latent classes `{0 … K_w-1}`, where `K_w` is *discovered*, not
-declared. Each class corresponds to one way that word is actually pronounced in
-the corpus. For an unambiguous word `K_w = 1`. For علم the procedure should
-recover `K_w` of about 3 or 4.
+discrete set of classes `{0 … K_w-1}`, one per way the word is actually voiced
+in the corpus. `K_w = 1` means unambiguous. For `علم` it is 2 or more.
 
-This gives a **discrete, inspectable, controllable** latent: exactly what the
-brief asks for when it says the user must be able to see what the model thinks a
-hard word means and correct it without typing diacritics.
+This gives a **discrete, inspectable, controllable** latent: the user can see
+which reading the model chose and change it without typing diacritics.
 
-### 1.1 How PCs are discovered (Stage A, offline, one pass over data)
+### 1.1 How the codes are labelled
 
-```
-for each word type w with corpus frequency >= min_freq:
-    1. Force-align the corpus  -> time span (t0, t1) of every occurrence of w
-    2. Extract a pronunciation-bearing acoustic embedding over (t0, t1)
-    3. Cluster those embeddings, selecting k by a stability criterion
-    4. k == 1  -> w is unambiguous
-       k >  1  -> w is a homograph; each cluster is one Pronunciation Code
-```
+Labels come from a **diacritizer run once over the transcripts**. For every
+word occurrence the diacritizer states the vowels; word types that take more
+than one distinct vowel pattern across the corpus are the homographs, and each
+occurrence is labelled by its own pattern.
 
-Three sub-problems, each solved without rules or lists:
+The shipped model never sees a diacritic. They label training data exactly as
+the forced aligner finds spans, and neither runs at inference.
 
-**(a) Alignment without an aligner binary.** We do not ship Montreal Forced
-Aligner, which is heavy and needs a pronunciation lexicon, and a lexicon is the
-handwritten rule list this project rejects. Instead we run **CTC forced
-alignment**: a Viterbi search over the CTC posterior lattice, implemented from
-scratch in `data/ctc_aligner.py`.
+### 1.2 Why not discover the codes from audio
 
-The acoustic model is `MahmoudAshraf/mms-300m-1130-forced-aligner`. Two
-practical details drove that choice:
+The first version of this system clustered self-supervised acoustic embeddings
+of each word occurrence and treated the clusters as readings. It was gated
+three ways: bootstrap stability, silhouette margin, and centroid separation.
 
-* It ships **safetensors**. Transformers 5.x refuses to load `.bin`
-  checkpoints unless torch is at least 2.6 (CVE-2025-32434), and most Arabic
-  wav2vec2 checkpoints are `.bin` only.
-* Its CTC vocabulary is **romanized**, 31 Latin tokens with no Arabic script.
-  So `text/romanize.py` transliterates the transcript while recording, for
-  every Latin character, which Arabic character produced it. Latin frame spans
-  are mapped back through that index to Arabic character spans, and from there
-  to words.
+**On 68 hours of real Egyptian narration it failed, and it failed in a way
+that looked like success.** The top "discovered homographs" were:
 
-The romanization is a script mapping used only to find frame boundaries. It
-makes no pronunciation decisions; those remain with the discovered codes.
+    الجرس  التعليقات  لايك  الوصف  الرابط  البلاي  اكتبوه
 
-One trap worth naming: on this model the CTC blank is `<blank>` at index 0
-while `pad_token_id` is 1. Using the tokenizer's pad id as the blank produces
-alignments that look plausible and are wrong, so the blank is detected
-explicitly.
+Those are the channel's subscribe pitch. They occur in exactly two acoustic
+contexts, the scripted promo read in a fixed fast cadence and ordinary
+narration, and the clustering found that split. Meanwhile `علم`, `مصر` and
+`دول` each received a single code.
 
-**Threshold calibration.** Measured on Egyptian conversational speech, the
-median aligned word lasts 0.24 s and the 5th percentile is 0.06 s. A 0.08 s
-minimum therefore discards real short words, and a romanized aligner scores
-lower than a native-script one because transliteration is approximate. The
-shipped thresholds (0.04 s, mean log-prob -6.5) keep 99.4% of spans against
-88.3% for the stricter defaults. Discovery needs occurrences far more than it
-needs a pristine tail.
+The cause is structural, not a matter of tuning. A mean-pooled SSL embedding
+over a word span encodes speaking rate, energy, pitch and recording session far
+more strongly than vowel identity. The three gates filter *noise*; a confound
+that is reproducible and well separated passes all of them. A fourth gate for
+duration confound helped and was not enough, because register differs in more
+than duration.
 
-**(b) A pronunciation-bearing embedding.** Raw mel is speaker and prosody
-dominated. The right representation is a **self-supervised speech layer known to
-encode phonetic identity**: wav2vec2/HuBERT middle layers. We mean-pool the
-aligned span, then apply per-word standardization to strip the global
-speaking-rate and energy axes. We also whiten against the sentence context so
-the embedding captures *this word's* realization rather than the utterance mood.
+Diacritics observe the vowels directly instead of through a proxy that is
+dominated by something else.
 
-**(c) Choosing k without declaring it.** For each word we run k-means for
-k = 1..K_max and select k by a **bootstrap stability score** (Fowlkes-Mallows on
-resampled fits) combined with a silhouette margin, then apply a **minimum
-between-cluster distance gate** so that clusters differing only in prosody
-collapse back to k = 1. A word is declared a homograph only if its split is both
-reproducible and acoustically substantive.
+### 1.3 The diacritizer is not treated as ground truth
 
-This is a discovery procedure, not a rule table. Run on a different dialect or
-language, it rediscovers that language's homographs.
+It is noisy, so a pattern becomes a reading only when it clears three bars:
 
-### 1.2 Why this is the novel contribution
+* seen at least `min_pattern_count` times, since one odd diacritization is an
+  error rather than a homograph;
+* holding at least `min_pattern_frac` of that word's occurrences;
+* surviving artifact suppression.
 
-Existing Arabic TTS: **text -> diacritizer -> phonemes -> acoustics**, where the
-diacritizer is a separate supervised model needing diacritized corpora.
+That last one matters most. Measured on 3000 real sentences, raw patterns gave
+912 "ambiguous" word types, the large majority differing only by marks that
+cannot encode a pronunciation:
 
-AdapTTS: **text -> context encoder -> discrete pronunciation code -> acoustics**,
-where the codes are self-discovered from audio and the context encoder is
-distilled from a large language model but deployed as a tiny one.
+| Word | Two forms | What differs |
+|---|---|---|
+| `في` | فِيْ / فْيْ | sukun on the initial letter |
+| `قال` | قَالْ / قَاْلْ | sukun on a long vowel |
+| `الناس` | النَّاسْ / اْلنَّاسْ | mark inside the article |
 
-The pronunciation code is a *bottleneck*. It is about 3 bits wide, not 768
-dimensions. The model cannot smear the decision, it must commit, and we can read
-the commitment and override it.
+Each is a phonological impossibility: a word cannot begin vowelless, a long
+vowel cannot also be vowelless, and `ال` is invariant. Suppressing them cut the
+count from 912 to **145** while every genuine homograph survived. Case endings
+are also ignored, since Egyptian speech drops them and keeping them would make
+a homograph of every noun.
 
----
+### 1.4 What this is verified to do
+
+Measured with CATT-ECA on real corpus sentences:
+
+| Word | Result |
+|---|---|
+| `علم` | عَلَم (flag) vs عِلْم (science) |
+| `مصر` | مَصْر (Egypt) vs مُصِرّ (insisting) |
+| `الدول` | إِلدِّوَل (countries) |
+| `عالم` | عَالَم (world) vs عَالِم (scholar) |
+| `الجرس`, `لايك`, `الوصف` | one reading each, correctly |
+
+Token alignment between plain and diacritized text is 100% on that sample, and
+the pass runs at 13 sentences/s, about 20 minutes for the whole corpus.
 
 ## 2. System architecture
 
