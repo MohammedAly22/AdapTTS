@@ -334,6 +334,64 @@ def main() -> None:
             )
 
     print()
+    print("CATT DIACRITIZER")
+    print("-" * 70)
+
+    @check("catt package and ECA checkpoint present")
+    def _catt_files():
+        """The label source. Checked here because stage A3 is worthless without
+        it, and the failure would otherwise appear after alignment has run."""
+        root = os.environ.get("CATT_ROOT") or cfg.paths.catt_root
+        if not root:
+            raise RuntimeError(
+                "paths.catt_root is not set and CATT_ROOT is not exported. "
+                "Labels come from the diacritizer, so this is required."
+            )
+        pkg = os.path.join(root, "catt_tashkeel")
+        if not os.path.isdir(pkg):
+            raise FileNotFoundError(
+                f"no catt_tashkeel/ under {root}. catt_root must be the "
+                f"directory *containing* the package."
+            )
+        ckpt = os.path.join(pkg, "checkpoints", "eca_model_weights.pt")
+        if not os.path.isfile(ckpt):
+            raise FileNotFoundError(
+                f"ECA checkpoint missing at {ckpt}. This is the one weights "
+                f"file the pipeline needs; the MSA one is not used."
+            )
+        mb = os.path.getsize(ckpt) / 1e6
+        return f"{root}\neca_model_weights.pt {mb:.0f} MB"
+
+    @check("diacritize.py builds the ECA model without MSA weights")
+    def _catt_loader():
+        """The wrapper class loads MSA unconditionally, so we cannot use it.
+        This confirms our own loader is importable and that the checkpoint
+        hyperparameters still match, without needing the CATT environment."""
+        import ast
+
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "diacritize.py")
+        tree = ast.parse(open(src, encoding="utf-8").read())
+        fns = {n.name for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        if "load_eca_model" not in fns:
+            raise RuntimeError("diacritize.py no longer defines load_eca_model")
+        # Look for real use, not the word in a docstring explaining why it is
+        # avoided: an import of it, or a call to it.
+        used = any(
+            (isinstance(n, ast.ImportFrom)
+             and any(a.name == "CattTashkeeler" for a in n.names))
+            or (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == "CattTashkeeler")
+            for n in ast.walk(tree)
+        )
+        if used:
+            raise RuntimeError(
+                "diacritize.py uses CattTashkeeler, whose constructor loads "
+                "the missing MSA checkpoint"
+            )
+        return "ECA-only loader present; wrapper not used"
+
+    print()
     print("=" * 70)
     failed = [r for r in RESULTS if not r[0]]
     if failed:

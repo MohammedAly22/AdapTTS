@@ -32,12 +32,20 @@ class PathsConfig:
     dataset_dir: str = "data/masri100h"
     cache_dir: str = "cache/exp1"
     hf_dataset_id: str = "ehabnegm/100-hour-Egyptian-dataset-single-speaker"
+    # Directory *containing* the catt_tashkeel package. Used only by
+    # scripts/diacritize.py, which runs under the separate CATT environment;
+    # nothing at train or inference time reads it.
+    catt_root: str = ""
 
     def resolve(self) -> "PathsConfig":
         out = copy.deepcopy(self)
         out.root = os.path.abspath(self.root)
         out.dataset_dir = os.path.abspath(self.dataset_dir)
         out.cache_dir = os.path.abspath(self.cache_dir)
+        # catt_root is deliberately left as written. It points outside the repo
+        # (an uploaded folder on the pod), so absolutising it against the
+        # current drive turns /workspace/... into G:\workspace\... on Windows
+        # and produces a misleading error message.
         return out
 
     @property

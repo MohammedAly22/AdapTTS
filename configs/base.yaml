@@ -11,6 +11,9 @@ paths:
   dataset_dir: data/masri100h
   cache_dir: cache/base
   hf_dataset_id: ehabnegm/100-hour-Egyptian-dataset-single-speaker
+  # Directory containing the catt_tashkeel package (not the package itself).
+  # Only scripts/diacritize.py uses it, run under the CATT conda env.
+  catt_root: /workspace/catt_parent
 
 audio:
   sample_rate: 24000

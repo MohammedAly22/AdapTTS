@@ -48,6 +48,31 @@ def test_strip_junk_keeps_letters_and_diacritics():
     assert strip_junk(text) == text
 
 
+def test_junk_inside_a_word_does_not_invent_a_reading():
+    """CATT puts its stray characters *between a letter and its mark*.
+
+    Every left-hand form below is verbatim output from the ECA checkpoint on
+    the probe sentences. The caret sits mid-word, so treating it as a letter
+    gives it the following fatha and adds a phantom slot: م^َصْرِ scored
+    '-|َ|ْ|-' against 'ـ|ْ|-' for the clean spelling, which would make a
+    homograph out of a word that has one reading here. That is the same class
+    of false positive that made الحكايه look ambiguous.
+    """
+    cases = [
+        ("م^َصْرِ", "مَصْرِ", "مصر"),
+        ("ش^َرَحْ", "شَرَحْ", "شرح"),
+        ("الن^َّظَرِي^َّه", "النَّظَرِيَّه", "النظريه"),
+        ("الْم^َوْضُوعْ", "الْمَوْضُوعْ", "الموضوع"),
+    ]
+    for dirty, clean, label in cases:
+        assert vowel_pattern(dirty) == vowel_pattern(clean), (
+            f"{label}: junk changed the reading "
+            f"({vowel_pattern(dirty)!r} vs {vowel_pattern(clean)!r})"
+        )
+    # The distinction that matters must survive the junk.
+    assert vowel_pattern("م^َصْرِ") != vowel_pattern("مُصِرِّ")
+
+
 # --------------------------------------------------------------------------
 # Vowel patterns
 # --------------------------------------------------------------------------

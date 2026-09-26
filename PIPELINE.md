@@ -56,6 +56,34 @@ Replayed against the real loss curve, the stopper halts at step 14000.
 
 ---
 
+## The notebooks, in order
+
+On a pod, run these top to bottom. Each one ends by naming the next, and each
+checks its own inputs, so a missing prerequisite fails in seconds rather than
+after an hour of compute.
+
+| Notebook | What it does | Environment |
+|---|---|---|
+| `00_setup.ipynb` | GPU check, test suite, model downloads, **CATT check** | `adaptts` |
+| `01_prepare_data.ipynb` | manifest, diacritize, align, **readings**, teacher, codec | `adaptts` (calls `CATT` for one stage) |
+| `02_train_context.ipynb` | homograph disambiguation + **the baseline gate** | `adaptts` |
+| `03_train_acoustic.ipynb` | the acoustic model, early-stopped | `adaptts` |
+| `04_inference.ipynb` | CPU speed, controllability, deploy bundle | `adaptts` |
+
+Two environments exist because the diacritizer pins an older torch. Notebook 01
+invokes the `CATT` interpreter as a subprocess for stage A0b; every other cell in
+every notebook runs under `adaptts`. Both notebook 00 and stage A0b check the
+CATT setup before it is needed.
+
+**Two gates decide whether to keep spending.** Notebook 01 prints the majority
+baseline and checks that the promo words are not split again. Notebook 02
+measures held-out accuracy against that baseline. If notebook 02 does not clear
+the baseline by a clear margin, stop there: the acoustic model inherits these
+labels, and that is exactly how the first run produced a system that read
+homographs by frequency.
+
+---
+
 ## Running it
 
 ### 0. Setup and preflight
@@ -79,17 +107,31 @@ discard more than 10%.
 
 ### 2. Diacritize  ← new stage
 
-This needs the CATT environment, which has its own torch pin, so run it with
-that interpreter:
+This needs the CATT environment, which pins an older torch and needs
+`pytorch_lightning`, so it gets its own env and its own interpreter:
 
 ```bash
-python scripts/diacritize.py \
-    --config configs/exp1_egyptian.yaml \
-    --catt-root /path/to/Marwa-Code-Switching-TTS-V1.2
+conda create -n CATT python=3.11 -y
+conda activate CATT
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install pytorch-lightning num2words tqdm pyyaml
+
+python scripts/diacritize.py --config configs/exp1_egyptian.yaml
+conda deactivate
 ```
 
-About 20 minutes at 13 sentences/s. Writes `cache/exp1/diacritized.jsonl`, and
-nothing downstream needs CATT again.
+Upload `catt_tashkeel/` so it sits at `/workspace/catt_parent/catt_tashkeel` and
+set `paths.catt_root: /workspace/catt_parent` in the config; then no
+`--catt-root` flag is needed. `CATT_ROOT` in the environment also works.
+
+**Only the ECA checkpoint is required.** The MSA weights can be deleted. The
+`CattTashkeeler` wrapper cannot be used, because its constructor loads the MSA
+checkpoint unconditionally and raises `FileNotFoundError`; `diacritize.py` builds
+the ECA model directly from the same classes instead.
+
+Measured at **157 sentences/s** on a 4090, so 15650 sentences takes about two
+minutes rather than the 20 first estimated. Writes
+`cache/exp1/diacritized.jsonl`, and nothing downstream needs CATT again.
 
 ### 3. Alignment and codec
 
@@ -170,7 +212,7 @@ Expect real-time factor near **0.1**, roughly 10x faster than real time.
 | Stage | Time | Cost |
 |---|---|---|
 | Manifest | 1 min | — |
-| Diacritize | 20 min | ~$0.15 |
+| Diacritize | 2 min | ~$0.02 |
 | Align + codec + teacher | ~45 min | ~$0.35 |
 | **Readings** | **2 min** | **the decision point** |
 | Context encoder | 20 min | ~$0.15 |

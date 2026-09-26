@@ -127,6 +127,13 @@ def letter_marks(word: str) -> List[Tuple[str, str]]:
     Diacritics bind to the letter they follow, so any comparison of readings has
     to respect that grouping. Working on a flat list of marks silently confuses
     an interior vowel with a case ending.
+
+    Junk is dropped here rather than by the caller. CATT emits its stray
+    characters *inside* words, between a letter and its mark: real output for
+    مصر is ``م^َصْرِ``. Treating ``^`` as a letter would give it the following
+    fatha and add a phantom slot, so the same word would take two different
+    patterns and be counted as a homograph. Everything that is not an Arabic
+    letter or a diacritic is therefore skipped.
     """
     out: List[Tuple[str, str]] = []
     for ch in word:
@@ -135,6 +142,8 @@ def letter_marks(word: str) -> List[Tuple[str, str]]:
         if ch in DIACRITICS:
             if out:
                 out[-1] = (out[-1][0], out[-1][1] + ch)
+            continue
+        if not is_arabic_letter(ch):
             continue
         out.append((ch, ""))
     return out

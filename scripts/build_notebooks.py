@@ -102,6 +102,24 @@ below. The first cell prints which interpreter you are actually on, so a
 wrong-kernel mistake shows up immediately rather than as a confusing import
 error later.
 
+## The second environment: CATT
+
+The diacritizer pins an older torch and needs `pytorch_lightning`, which does
+not coexist cleanly with this project's pins. It therefore gets its own
+environment, used by exactly one step in notebook 01 and never again.
+
+```bash
+conda create -n CATT python=3.11 -y
+conda activate CATT
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install pytorch-lightning num2words tqdm pyyaml
+conda deactivate
+```
+
+Upload the `catt_tashkeel` folder so it sits at `/workspace/catt_parent/catt_tashkeel`,
+and set `paths.catt_root: /workspace/catt_parent` in your config. Only the ECA
+checkpoint is needed; the MSA weights are never loaded.
+
 Expected: about 5 minutes plus roughly 4 GB of model downloads.
 """),
     code("!nvidia-smi"),
@@ -235,7 +253,7 @@ print("1/4 CTC aligner")
 AutoProcessor.from_pretrained(cfg["align"]["model_id"])
 AutoModelForCTC.from_pretrained(cfg["align"]["model_id"])
 
-print("2/4 SSL span encoder")
+print("2/4 SSL span encoder (analysis only; labels no longer use it)")
 AutoFeatureExtractor.from_pretrained(cfg["spanemb"]["model_id"])
 AutoModel.from_pretrained(cfg["spanemb"]["model_id"])
 
@@ -249,6 +267,63 @@ MimiModel.from_pretrained(cfg["codec_model_id"])
 print()
 print("all models cached")
 """),
+    md("""
+## Check the CATT environment
+
+The diacritizer runs in its own environment, so it cannot be imported here.
+This checks it the way notebook 01 will actually invoke it: a subprocess under
+the `CATT` interpreter that loads the ECA checkpoint and diacritizes two probe
+sentences.
+
+Catching a broken CATT setup now costs a minute. Catching it in notebook 01
+costs the 40 minutes of alignment you already paid for.
+"""),
+    code("""
+import os, subprocess, sys, yaml
+
+_cfg = yaml.safe_load(open("configs/base.yaml", encoding="utf-8"))
+CATT_ROOT = os.environ.get("CATT_ROOT") or _cfg["paths"].get("catt_root", "")
+CATT_PY = os.environ.get(
+    "CATT_PY", os.path.expanduser("~/miniconda3/envs/CATT/bin/python")
+)
+
+print("catt_root:", CATT_ROOT or "(not set)")
+print("catt python:", CATT_PY)
+
+ok = True
+if not CATT_ROOT or not os.path.isdir(os.path.join(CATT_ROOT, "catt_tashkeel")):
+    ok = False
+    print()
+    print("No catt_tashkeel/ under catt_root.")
+    print("Upload the folder and set paths.catt_root in your config.")
+elif not os.path.isfile(CATT_PY):
+    ok = False
+    print()
+    print("CATT interpreter not found. Create the env (see the shell block above),")
+    print("or set CATT_PY to its python.")
+else:
+    ckpt = os.path.join(CATT_ROOT, "catt_tashkeel", "checkpoints", "eca_model_weights.pt")
+    print("eca checkpoint:", "found" if os.path.isfile(ckpt) else "MISSING")
+    probe = (
+        "import sys; sys.path.insert(0, %r); sys.path.insert(0, 'scripts')\\n"
+        "from diacritize import load_eca_model\\n"
+        "m, pre, post, tok = load_eca_model(%r)\\n"
+        "t = ['انا شوفت علم مصر بيرفرف', 'علم الفيزيا من اهم العلوم']\\n"
+        "p = [pre.process_text(tok.remove_tashkeel(x), verbose=False) for x in t]\\n"
+        "o = [post.process(x) for x in m.do_tashkeel_batch(p, batch_size=2, verbose=False)]\\n"
+        "print(o[0]); print(o[1])\\n"
+    ) % (CATT_ROOT, CATT_ROOT)
+    r = subprocess.run([CATT_PY, "-c", probe], capture_output=True, text=True,
+                       env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+    print()
+    print(r.stdout.strip() or "(no output)")
+    if r.returncode != 0:
+        ok = False
+        print("FAILED:", r.stderr.strip()[-1200:])
+
+print()
+print("CATT ready" if ok else "CATT NOT ready - fix before notebook 01 stage A0b")
+"""),
     md("Setup is done. Continue to **01_prepare_data.ipynb**."),
 ]
 
@@ -259,7 +334,7 @@ print("all models cached")
 
 NB01 = [
     md("""
-# 01 - Data preparation and pronunciation-code discovery
+# 01 - Data preparation and pronunciation labels
 
 All the offline work happens here. Afterwards training reads only memmaps, so
 the GPU never waits on data.
@@ -267,14 +342,28 @@ the GPU never waits on data.
 | Stage | What it does | Time on a 4090 |
 |---|---|---|
 | A0 | manifest: scan, normalize, filter | 1 min |
+| A0b | **diacritize with CATT-ECA** (own conda env) | about 20 min |
 | A1 | CTC forced alignment to word spans | about 35 min |
-| A2 | self-supervised embeddings per word span | about 25 min |
-| A3 | **discover pronunciation codes** | about 8 min |
+| A3 | **derive readings** -> the decision point | about 2 min |
 | A4 | MARBERTv2 teacher cache and head | about 8 min |
 | A5 | Mimi encode to RVQ codes | about 30 min |
 
-Stage A3 is the novel part: it decides from audio alone which words have more
-than one pronunciation. Nothing is hardcoded.
+Run the cells in order, top to bottom.
+
+## What changed, and why it matters
+
+The first full run cost $15 and learned nothing, because labels came from
+unsupervised clustering of acoustic word spans. That returned the channel's
+subscribe pitch as "homographs" (الجرس, لايك, الوصف) while علم, مصر and دول each
+got a single code. A mean-pooled speech embedding encodes speaking rate and
+recording session far more strongly than vowel identity, so no threshold on that
+signal can separate the two.
+
+Labels now come from a **diacritizer**, which observes the vowels directly.
+Stage A2 (span embeddings) is no longer on the critical path and is skipped.
+
+Stage A3 is the decision point: it costs two minutes and tells you whether the
+labels are sound *before* you spend money on training.
 """),
     code(BOOT),
     md("""
@@ -346,6 +435,73 @@ for r in leftover[:3]:
     print("   ", r["text"][:100])
 """),
     md("""
+## Stage A0b - diacritize with CATT-ECA
+
+This is the label source. It runs **in the CATT environment**, not this one, so
+it goes through that interpreter explicitly rather than through `!python`.
+
+The diacritics are a labelling device only. They tell us which reading each word
+occurrence takes; the shipped model never sees a diacritic and you never type
+one at inference. This is the same role the forced aligner plays for word spans.
+
+About 20 minutes for 15.6k sentences. Runs once, then caches.
+"""),
+    code("""
+import os, subprocess, sys, yaml
+
+_raw = yaml.safe_load(open(CONFIG, encoding="utf-8"))
+_base = yaml.safe_load(open("configs/base.yaml", encoding="utf-8"))
+CATT_ROOT = (os.environ.get("CATT_ROOT")
+             or _raw.get("paths", {}).get("catt_root")
+             or _base["paths"].get("catt_root", ""))
+CATT_PY = os.environ.get(
+    "CATT_PY", os.path.expanduser("~/miniconda3/envs/CATT/bin/python")
+)
+print("catt_root  :", CATT_ROOT or "(not set)")
+print("catt python:", CATT_PY)
+
+assert CATT_ROOT and os.path.isdir(os.path.join(CATT_ROOT, "catt_tashkeel")), (
+    "catt_tashkeel/ not found under catt_root. Upload the folder and set "
+    "paths.catt_root in your config."
+)
+assert os.path.isfile(CATT_PY), (
+    "CATT interpreter not found. Create the CATT env (notebook 00) or set CATT_PY."
+)
+"""),
+    code("""
+# Streams output so you can watch progress rather than waiting on a block.
+import subprocess, sys, os
+
+cmd = [CATT_PY, "scripts/diacritize.py", "--config", CONFIG,
+       "--catt-root", CATT_ROOT, "--batch-size", "32"]
+print(" ".join(cmd))
+print()
+p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                     text=True, bufsize=1,
+                     env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+for line in p.stdout:
+    print(line.rstrip(), flush=True)
+p.wait()
+assert p.returncode == 0, f"diacritize failed with code {p.returncode}"
+"""),
+    code("""
+# Inspect the diacritized output. The homographs should differ in their marks.
+import json
+
+rows = [json.loads(l) for l in open(cfg.paths.diacritized_path, encoding="utf-8")]
+print(f"{len(rows)} diacritized utterances")
+print()
+for r in rows[:3]:
+    print("plain:", r["text"][:80])
+    print("diac :", r["diacritized"][:80])
+    print()
+
+# Token counts must match, or an occurrence would be mislabelled. The reading
+# stage skips any mismatch rather than guessing, but a high rate means trouble.
+bad = sum(1 for r in rows if len(r["text"].split()) != len(r["diacritized"].split()))
+print(f"token-count mismatches: {bad} of {len(rows)} ({100*bad/max(len(rows),1):.1f}%)")
+"""),
+    md("""
 ## Stage A1 - CTC forced alignment
 
 Finds the time span of every word with no pronunciation lexicon. The Viterbi
@@ -354,70 +510,86 @@ dependency.
 """),
     code("!python scripts/preprocess.py --config $CONFIG --stage align"),
     md("""
-## Stages A2 and A3 - span embeddings and code discovery
+## Stage A3 - derive the readings
 
-The heart of the system. Each occurrence of each word type is embedded with a
-self-supervised speech model, then we ask whether those embeddings form one
-cluster or several. A split is accepted only when it is reproducible under
-bootstrap resampling, geometrically clean, and acoustically well separated.
+### This is the decision point of the whole project
+
+Two minutes here decides whether training is worth paying for. The stage groups
+every occurrence of every word by its vowel pattern and keeps a split only when
+it survives the artifact filters and the context-agreement gate.
+
+Span embeddings (the old stage A2) are not needed for labels and are skipped.
 """),
     code("!python scripts/preprocess.py --config $CONFIG --stage discover"),
-    md("""
-### What did it discover?
-
-This is the moment of truth. Words like the ones named in the brief should
-appear with more than one reading.
-"""),
     code("""
-from adaptts.data.discovery import PronunciationLexicon
+from adaptts.text.diacritics import ReadingLexicon
 
-lex = PronunciationLexicon.load(cfg.paths.lexicon_path)
+lex = ReadingLexicon.load(cfg.paths.reading_lexicon_path)
 amb = lex.ambiguous_words
-print(f"{len(amb)} ambiguous word types discovered")
+print(f"{len(lex)} word types, {len(amb)} with more than one reading")
 print()
 
-entries = sorted((lex.entries[w] for w in amb), key=lambda e: -e.occurrence_count)
-header = f"{'word':<18}{'codes':>6}{'occ':>7}{'stab':>8}{'sil':>8}{'sep':>8}  counts"
-print(header)
+entries = sorted((lex.entries[w] for w in amb), key=lambda e: -e.total)
+print(f"{'word':<16}{'readings':>9}{'uses':>7}  counts  examples")
 print("-" * 74)
 for e in entries[:40]:
-    print(f"{e.word:<18}{e.n_codes:>6}{e.occurrence_count:>7}{e.stability:>8.2f}"
-          f"{e.silhouette:>8.2f}{e.separation:>8.2f}  {e.counts}")
+    print(f"{e.word:<16}{e.n_codes:>9}{e.total:>7}  {e.counts}  {' '.join(e.examples)}")
 """),
     code("""
-# Check the specific homographs named in the project brief.
+# The homographs named in the brief. These are the reason the project exists.
 for w in PROBE_WORDS:
+    e = lex.entries.get(w)
     k = lex.n_codes(w)
-    print(f"{w:<10} -> {k} code(s)   " + ("AMBIGUOUS" if k > 1 else "single reading"))
+    ex = " ".join(e.examples) if e else ""
+    print(f"{w:<10} -> {k} reading(s)  {'AMBIGUOUS' if k > 1 else 'single':<10} {ex}")
 """),
     code("""
-# Read the sentences behind each code. This is how you confirm the clusters
-# track meaning rather than recording conditions.
-import json, collections, os
+# The failure mode from the first run: promo words must NOT be ambiguous.
+# Clustering split these on speaking register. If any shows up here, the
+# labels have regressed and training would waste money again.
+PROMO = ["الجرس", "التعليقات", "لايك", "الوصف", "الرابط", "البلاي", "اكتبوه", "عندكم"]
+bad = [w for w in PROMO if lex.n_codes(w) > 1]
+for w in PROMO:
+    k = lex.n_codes(w)
+    print(f"{w:<14} {k} reading(s)" + ("   <-- REGRESSION" if k > 1 else ""))
+print()
+print("promo words clean" if not bad else f"PROBLEM: {bad} split again")
+"""),
+    code("""
+# Read the sentences behind each reading. This is how you confirm the labels
+# track meaning rather than an artifact of the diacritizer.
+import json, collections
 
-labels = json.load(open(os.path.join(cfg.paths.cache_dir, "code_labels.json"), encoding="utf-8"))
-manifest = [json.loads(l) for l in open(cfg.paths.manifest_path, encoding="utf-8")]
-by_uid = {r["uid"]: r["text"] for r in manifest}
+rows = [json.loads(l) for l in open(cfg.paths.diacritized_path, encoding="utf-8")]
 
-WORD = PROBE_WORDS[0]      # change to inspect any discovered homograph
-groups = collections.defaultdict(list)
-for key, code in labels.items():
-    uid, widx = key.split(chr(9))
-    text = by_uid.get(uid, "")
-    words = text.split()
-    if int(widx) < len(words) and words[int(widx)] == WORD:
-        groups[code].append(text)
-
-for code in sorted(groups):
-    print()
-    print(f"=== {WORD}  code {code}  ({len(groups[code])} occurrences) ===")
-    for t in groups[code][:6]:
-        print("   ", t[:95])
+WORD = PROBE_WORDS[0]      # change to inspect any ambiguous word
+e = lex.entries.get(WORD)
+if e is None or e.n_codes < 2:
+    print(f"{WORD} has a single reading here; pick another from the table above.")
+else:
+    groups = collections.defaultdict(list)
+    for r in rows:
+        plain, diac = r["text"].split(), r["diacritized"].split()
+        if len(plain) != len(diac):
+            continue
+        for w, d in zip(plain, diac):
+            if w == WORD:
+                c = e.code_of(d)
+                if c >= 0:
+                    groups[c].append((d, r["text"]))
+    for c in sorted(groups):
+        print()
+        print(f"=== {WORD}  reading {c}  ({e.examples[c]})  "
+              f"{len(groups[c])} occurrences ===")
+        for d, t in groups[c][:6]:
+            print(f"   {d:<14} {t[:80]}")
 """),
     md("""
-If the sentences under each code share a meaning, discovery worked. If they look
-mixed, raise `discovery.min_separation` or `discovery.stability_threshold` in the
-config and rerun this stage with `--force`.
+**How to read this.** Sentences under one reading should share a meaning: علم as
+flag in one group, as science in the other. If the groups look mixed, raise
+`discovery.min_pattern_count` in the config and rerun this stage with `--force`.
+
+If the promo-word check above shows a regression, stop. Do not train.
 """),
     md("""
 ## Stage A4 - teacher cache
@@ -449,6 +621,26 @@ for k, v in b.items():
 print()
 print("ambiguous words in this batch:", int((b["n_codes"] > 1).sum()))
 ds.close()
+"""),
+    md("""
+## The majority baseline
+
+The number notebook 02 has to beat. If every ambiguous word were always given
+its most common reading, this is the accuracy you would get for free. A context
+encoder that scores at or below this has learned nothing, whatever the loss
+curve looks like.
+
+Write it down before training.
+"""),
+    code("""
+best = sum(max(lex.entries[w].counts) for w in amb)
+total = sum(lex.entries[w].total for w in amb)
+baseline = best / max(total, 1)
+print(f"ambiguous word types : {len(amb)}")
+print(f"labelled occurrences : {total}")
+print(f"MAJORITY BASELINE    : {baseline:.3f}")
+print()
+print("Notebook 02 must beat this by a clear margin, not by 1%.")
 print()
 print("Data is ready. Continue to 02_train_context.ipynb")
 """),
@@ -475,7 +667,9 @@ word's discovered readings applies in this context.
 ## Start TensorBoard
 
 Watch `eval/code_acc`. That is held-out homograph accuracy, the number that
-matters. Above roughly 0.90 means the approach is working.
+matters, and it has to be read **against the majority baseline** from notebook
+01, not against zero. A model that always guesses the commonest reading already
+scores the baseline while having learned nothing.
 """),
     code("""
 %load_ext tensorboard
@@ -517,6 +711,96 @@ print("science context -> code", cb)
 print()
 print("DISAMBIGUATION WORKS" if ca and cb and ca != cb
       else "NOT disambiguating: investigate before training the acoustic model")
+"""),
+    md("""
+## The gate: did it beat the majority baseline?
+
+The probe check above is necessary but not sufficient. Two different codes on
+two sentences is consistent with a model that has genuinely learned context, and
+also with one that memorised a single split. This cell measures held-out
+accuracy against the baseline over every ambiguous occurrence.
+
+**Do not start notebook 03 until this passes.** The acoustic model inherits
+these labels; if the disambiguator is at the prior, the expensive run produces a
+system that reads homographs by frequency, which is what the first $15 bought.
+"""),
+    code("""
+import json, collections
+from adaptts.text.diacritics import ReadingLexicon
+
+lex = ReadingLexicon.load(cfg.paths.reading_lexicon_path)
+rows = [json.loads(l) for l in open(cfg.paths.diacritized_path, encoding="utf-8")]
+manifest = {json.loads(l)["uid"]: json.loads(l) for l in
+            open(cfg.paths.manifest_path, encoding="utf-8")}
+
+# Held-out splits only: training accuracy proves nothing about generalisation.
+# The manifest names them "dev" and "test".
+eval_uids = {u for u, r in manifest.items() if r.get("split") in ("dev", "test")}
+print(f"held-out utterances: {len(eval_uids)}")
+
+# Group the gold labels by sentence so each sentence is analyzed once rather
+# than once per ambiguous word in it.
+gold_by_text = collections.defaultdict(list)   # text -> [(word_index, word, code)]
+for r in rows:
+    if r["uid"] not in eval_uids:
+        continue
+    plain, diac = r["text"].split(), r["diacritized"].split()
+    if len(plain) != len(diac):
+        continue
+    for i, (w, d) in enumerate(zip(plain, diac)):
+        e = lex.entries.get(w)
+        if e is None or e.n_codes < 2:
+            continue
+        c = e.code_of(d)
+        if c >= 0:
+            gold_by_text[r["text"]].append((i, w, c))
+
+gold = [(t, i, w, c) for t, items in gold_by_text.items() for i, w, c in items]
+print(f"held-out ambiguous occurrences: {len(gold)} "
+      f"across {len(gold_by_text)} sentences")
+
+# Majority baseline on exactly this set.
+majority = {w: max(range(e.n_codes), key=lambda k: e.counts[k])
+            for w, e in lex.entries.items() if e.n_codes > 1}
+base_hits = sum(1 for _, _, w, c in gold if majority.get(w) == c)
+
+# Model predictions, one analyze() per sentence.
+from tqdm.auto import tqdm
+
+hits = 0
+by_word = collections.defaultdict(lambda: [0, 0])
+for text, items in tqdm(gold_by_text.items(), desc="scoring", unit="sent"):
+    plan = tts.analyze(text)
+    # Match on word index, not on the word string: a sentence can repeat an
+    # ambiguous word with two different readings (دول ... دول), and matching by
+    # string alone would score the wrong occurrence.
+    pred_by_idx = {hw.index: hw.code for hw in plan.hard_words}
+    for idx, w, c in items:
+        ok = pred_by_idx.get(idx) == c
+        hits += int(ok)
+        by_word[w][0] += int(ok)
+        by_word[w][1] += 1
+
+n = max(len(gold), 1)
+acc, base = hits / n, base_hits / n
+print()
+print(f"majority baseline : {base:.3f}")
+print(f"model accuracy    : {acc:.3f}")
+print(f"margin            : {acc - base:+.3f}")
+print()
+if acc > base + 0.05:
+    print("PASS - the model is using context. Continue to notebook 03.")
+elif acc > base:
+    print("MARGINAL - above the prior but within noise. More data or more")
+    print("homograph contrast is needed before paying for the acoustic run.")
+else:
+    print("FAIL - at or below the prior. The model has learned nothing beyond")
+    print("word frequency. Do NOT train the acoustic model yet.")
+
+print()
+print(f"{'word':<14}{'acc':>6}{'n':>6}")
+for w, (h, t) in sorted(by_word.items(), key=lambda kv: -kv[1][1])[:20]:
+    print(f"{w:<14}{h/max(t,1):>6.2f}{t:>6}")
 """),
     code("""
 # The multi-homograph stress sentence from the brief.
@@ -822,7 +1106,9 @@ for src, dst in [
     (Path(cfg.paths.ckpt_dir) / "context_encoder" / "best.pt", "context_encoder.pt"),
     (Path(cfg.paths.ckpt_dir) / "acoustic" / "best.pt", "acoustic.pt"),
     (Path(cfg.paths.charvocab_path), "char_vocab.json"),
-    (Path(cfg.paths.lexicon_path), "pronunciation_codes.json"),
+    # The reading lexicon, not the retired clustering one. Inference needs it to
+    # know how many readings a word has and what each code means.
+    (Path(cfg.paths.reading_lexicon_path), "reading_lexicon.json"),
     (Path("configs/exp1_egyptian.yaml"), "config.yaml"),
 ]:
     if Path(src).exists():

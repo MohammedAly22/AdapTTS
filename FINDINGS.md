@@ -69,6 +69,32 @@ reading agrees:
 CATT is deterministic, verified on ten sentences that repeat verbatim, so the
 variation on `بداوا` is model uncertainty rather than randomness.
 
+### A fourth artifact: junk characters inside words
+
+CATT emits stray characters (`^`, `؞`, `<`, `>`) and it puts them *between a
+letter and its mark*, not between words. Real output for two probe sentences:
+
+```
+م^َصْرِ        ش^َرَحْ        الن^َّظَرِي^َّه        حَلَق؞َه
+```
+
+`strip_junk` removed these from whole sentences, but `letter_marks` did not, and
+it treated any non-diacritic character as a letter. So `^` became a phantom
+letter, stole the following fatha, and changed the vowel pattern: `م^َصْرِ` scored
+`-|َ|ْ|-` where the clean spelling scores `-|ْ|-`. The same word in the same
+reading landed in two classes, which is a fake homograph of exactly the kind
+that made الحكايه look ambiguous.
+
+Fixed in `letter_marks`, which now skips anything that is not an Arabic letter
+or a diacritic. Verified on real ECA output: every reported pattern has exactly
+one slot per letter, and مصر still separates. Pinned by
+`test_junk_inside_a_word_does_not_invent_a_reading`, whose inputs are verbatim
+CATT output.
+
+This one mattered because it was silent. Nothing downstream could tell a phantom
+slot from a real one, and the result would have been a larger ambiguous-word set
+that looked like better coverage.
+
 ---
 
 ## 2. CPU inference was ~10x slower than necessary
