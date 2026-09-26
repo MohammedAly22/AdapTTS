@@ -298,6 +298,26 @@ def align_tokens(
     return out
 
 
+def _context_agreement(
+    by_context: Dict[Tuple[str, str], Counter]
+) -> Tuple[float, int]:
+    """How consistently does an identical context give the same pattern?
+
+    Returns ``(agreement, n_occurrences_in_repeated_contexts)``. Contexts seen
+    only once carry no evidence either way and are ignored.
+
+    This is the measurement that separates homography from diacritizer
+    uncertainty. A word whose reading follows its neighbours is a homograph; one
+    whose identical neighbours produce different readings is noise.
+    """
+    repeated = [c for c in by_context.values() if sum(c.values()) > 1]
+    if not repeated:
+        return 1.0, 0
+    agree = sum(max(c.values()) for c in repeated)
+    total = sum(sum(c.values()) for c in repeated)
+    return (agree / total if total else 1.0), total
+
+
 def collect_readings(
     sentences: Sequence[Tuple[Sequence[str], Sequence[str]]],
     *,
@@ -305,6 +325,8 @@ def collect_readings(
     min_pattern_count: int = 3,
     min_pattern_frac: float = 0.08,
     max_codes: int = 4,
+    max_raw_patterns: int = 4,
+    min_context_agreement: float = 0.75,
 ) -> Dict[str, WordReadings]:
     """Derive per-word readings from aligned (plain, diacritized) sentences.
 
@@ -312,12 +334,31 @@ def collect_readings(
     once is an error; a pattern seen many times across many sentences is a
     reading. Requiring both an absolute count and a share of the word's
     occurrences rejects both rare noise and a systematic minority slip.
+
+    Two further gates separate real homography from diacritizer uncertainty,
+    which counts alone cannot distinguish:
+
+    * ``max_raw_patterns``: a word the diacritizer gives five or more different
+      patterns is one it is unsure about, not one with five readings.
+    * ``min_context_agreement``: a genuine reading is determined by context, so
+      where the same neighbouring words repeat, the pattern must agree. Measured
+      on real data, real homographs score 80-100% here (مصر and عالم both 100%,
+      دول 93%) while noise scores 50% or has no repeated context at all.
+
+    Without these, the labels are mostly unlearnable: a context encoder trained
+    on the unfiltered set scored 67.9% held out against a 68.3% majority
+    baseline, meaning it learned nothing beyond the prior.
     """
     seen: Dict[str, Counter] = defaultdict(Counter)
     example: Dict[Tuple[str, str], str] = {}
+    # (word, left, right) -> patterns observed in that exact context
+    contexts: Dict[str, Dict[Tuple[str, str], Counter]] = defaultdict(
+        lambda: defaultdict(Counter)
+    )
 
     for plain, diac in sentences:
-        for p, d in zip(plain, align_tokens(plain, diac)):
+        aligned = align_tokens(plain, diac)
+        for i, (p, d) in enumerate(zip(plain, aligned)):
             if d is None:
                 continue
             pat = vowel_pattern(d)
@@ -325,18 +366,33 @@ def collect_readings(
                 continue  # no diacritics at all: nothing to learn
             seen[p][pat] += 1
             example.setdefault((p, pat), d)
+            left = plain[i - 1] if i > 0 else "<s>"
+            right = plain[i + 1] if i + 1 < len(plain) else "</s>"
+            contexts[p][(left, right)][pat] += 1
 
     readings: Dict[str, WordReadings] = {}
     for word, counter in seen.items():
         total = sum(counter.values())
         if total < min_word_freq:
             continue
+
+        # Gate 1: too many raw patterns means the diacritizer is guessing.
+        if len(counter) > max_raw_patterns:
+            continue
+
         kept = [
             (pat, n) for pat, n in counter.most_common()
             if n >= min_pattern_count and n / total >= min_pattern_frac
         ][:max_codes]
         if not kept:
             continue
+
+        # Gate 2: where a context repeats, the reading must agree. A word whose
+        # identical surroundings yield different patterns is not a homograph.
+        if len(kept) > 1:
+            agree, n_rep = _context_agreement(contexts[word])
+            if n_rep >= 2 and agree < min_context_agreement:
+                continue
         readings[word] = WordReadings(
             word=word,
             patterns=[p for p, _ in kept],

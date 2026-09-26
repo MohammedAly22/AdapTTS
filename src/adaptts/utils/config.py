@@ -163,6 +163,13 @@ class DiscoveryConfig:
     # the word's uses, to count as a reading rather than a diacritizer slip.
     min_pattern_count: int = 3
     min_pattern_frac: float = 0.08
+    # A word the diacritizer gives more than this many distinct patterns is
+    # one it is unsure about, not one with that many readings.
+    max_raw_patterns: int = 4
+    # Where the same neighbouring words repeat, the reading must agree at
+    # least this often. Measured on real data, genuine homographs score
+    # 80-100% and diacritizer noise scores 50% or lower.
+    min_context_agreement: float = 0.75
     max_codes_per_word: int = 4
     n_bootstrap: int = 24
     bootstrap_frac: float = 0.8
