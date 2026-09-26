@@ -65,28 +65,173 @@ DIACRITICS = frozenset(
     | {chr(c) for c in range(0x064B, 0x0653)}
 )
 
-# Characters CATT emits that are neither letters nor diacritics. Measured on
-# real output: the circumflex, the Arabic triple-dot mark and a stray '>'.
-# Anything outside the Arabic letter block is dropped rather than enumerated,
-# so a new stray symbol cannot corrupt a label.
-KNOWN_JUNK = frozenset({"^", "؞", ">", "<", "…", "`", "~"})
+# ---------------------------------------------------------------------------
+# Phoneme variants
+# ---------------------------------------------------------------------------
+#
+# CATT emits two very different kinds of non-standard character, and treating
+# them alike destroys information. Measured on real ECA output (see
+# PHONOLOGY.md):
+#
+#   ؞ (U+061E) attaches to exactly ج, ق and ف, and marks a NON-DEFAULT
+#     realisation of that letter. It is phonemic and must be preserved.
+#
+#   ^ < > ` … attach to anything (measured on و ع م ر ز ن ه د) with no
+#     phonological pattern. They are positional noise and are deleted.
+#
+# The triple dot is rewritten to '~' because U+061E is invisible in most
+# terminals and is silently lost in copy-paste, and because a user typing an
+# override needs a character they can actually enter.
+
+VARIANT_MARK = "~"
+_TRIPLE_DOT = "؞"
+
+# Which letters the variant mark may attach to, and what it means. The value is
+# for documentation and error messages; the model learns the acoustics itself.
+VARIANT_LETTERS = {
+    "ق": "qaf -> hamza (glottal stop)",   # ق
+    "ج": "geem /g/ -> /zh/ (jeem)",       # ج
+    "ف": "faa /f/ -> /v/",                # ف
+}
+
+# Sukun on a word-final taa-marbuta means the /t/ surfaces: مَدِينَة is /madiina/
+# but مَدِينَةْ is /madiinat/. That is a real contrast, unlike the case endings
+# around it, so it is carried as a variant rather than suppressed.
+TAA_MARBUTA = "ة"
+
+# Noise, with no phonological content. Deleted outright.
+KNOWN_JUNK = frozenset({"^", ">", "<", "…", "`"})
 
 
 def is_arabic_letter(ch: str) -> bool:
     return "ء" <= ch <= "ي" or ch in "ٱپچژڤگ"
 
 
+def normalize_variant_marks(text: str) -> str:
+    """Rewrite CATT's triple dot as ``~`` and drop the noise characters.
+
+    Run this on diacritizer output before anything else looks at it. The
+    distinction it preserves is the whole point: ``؞`` carries pronunciation,
+    ``^`` does not.
+
+    A variant mark that did not land on ق, ج or ف is dropped, because the
+    measurement says those are the only letters it applies to and anything else
+    is a stray.
+    """
+    out: List[str] = []
+    for ch in text:
+        if ch in KNOWN_JUNK:
+            continue
+        if ch in (_TRIPLE_DOT, VARIANT_MARK):
+            # Attaches to the last letter emitted, so check that letter.
+            prev_letter = next(
+                (c for c in reversed(out) if is_arabic_letter(c)), ""
+            )
+            if prev_letter in VARIANT_LETTERS:
+                out.append(VARIANT_MARK)
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
 def strip_junk(text: str) -> str:
-    """Remove the non-linguistic characters a diacritizer can emit."""
+    """Remove every non-linguistic character, variant marks included.
+
+    Used where only the vowel pattern matters, since a variant mark must never
+    create a reading: CATT marks the qaf of قرار inconsistently between
+    contexts, so promoting the mark to a pattern distinction would split that
+    word on a diacritizer error. Use :func:`normalize_variant_marks` instead
+    wherever the pronunciation detail has to survive.
+    """
     return "".join(
         ch for ch in text
-        if ch not in KNOWN_JUNK and (ch.isspace() or is_arabic_letter(ch) or ch in DIACRITICS)
+        if ch not in KNOWN_JUNK
+        and ch not in (_TRIPLE_DOT, VARIANT_MARK)
+        and (ch.isspace() or is_arabic_letter(ch) or ch in DIACRITICS)
     )
 
 
 def strip_diacritics(word: str) -> str:
     """The bare consonant skeleton, which is what the model actually reads."""
-    return "".join(ch for ch in word if ch not in DIACRITICS and ch != TATWEEL)
+    return "".join(
+        ch for ch in word
+        if ch not in DIACRITICS
+        and ch != TATWEEL
+        and ch not in KNOWN_JUNK
+        and ch not in (_TRIPLE_DOT, VARIANT_MARK)
+    )
+
+
+# Variant feature indices. 0 means "default realisation", which is the common
+# case, so an all-zero vector costs nothing and means "nothing unusual here".
+VARIANT_NONE = 0
+VARIANT_LETTER = 1      # ق/ج/ف realised non-natively (the triple dot)
+VARIANT_TAA_T = 2       # word-final ة pronounced /t/ (sukun on taa-marbuta)
+N_VARIANTS = 3
+
+
+def letter_variants(word: str) -> List[int]:
+    """Per-letter phoneme-variant codes for one diacritized word.
+
+    Returns one code per letter of ``strip_diacritics(word)``, so the result
+    lines up with the characters the model actually sees. This is the channel
+    through which pronunciation detail reaches the acoustic model without
+    entering the vowel pattern, which must stay free of it.
+
+    Two sources, both measured rather than assumed:
+
+    * a variant mark (``~``, from CATT's ``؞``) on ق, ج or ف;
+    * sukun on a word-final ة, which makes the /t/ surface.
+    """
+    letters: List[str] = []
+    variants: List[int] = []
+    pending_marks: List[str] = []
+
+    for ch in word:
+        if ch == TATWEEL or ch in KNOWN_JUNK:
+            continue
+        if ch in (_TRIPLE_DOT, VARIANT_MARK):
+            if letters and letters[-1] in VARIANT_LETTERS:
+                variants[-1] = VARIANT_LETTER
+            continue
+        if ch in DIACRITICS:
+            if letters:
+                pending_marks.append(ch)
+                # Sukun on a final taa-marbuta is resolved after the loop, when
+                # "final" is actually known.
+            continue
+        if not is_arabic_letter(ch):
+            continue
+        letters.append(ch)
+        variants.append(VARIANT_NONE)
+        pending_marks = []
+
+    # The /t/ contrast, only meaningful on the last letter.
+    if letters and letters[-1] == TAA_MARBUTA:
+        marks_on_last = _marks_on_final_letter(word)
+        if SUKUN in marks_on_last:
+            variants[-1] = VARIANT_TAA_T
+
+    return variants
+
+
+def _marks_on_final_letter(word: str) -> str:
+    """The diacritics attached to the last letter of ``word``.
+
+    Marks follow their letter, so scanning backwards these come *before* the
+    final letter is reached; everything collected up to that point belongs to
+    it.
+    """
+    marks: List[str] = []
+    for ch in reversed(word):
+        if ch in DIACRITICS:
+            marks.append(ch)
+            continue
+        if ch in (_TRIPLE_DOT, VARIANT_MARK) or ch in KNOWN_JUNK or ch == TATWEEL:
+            continue
+        if is_arabic_letter(ch):
+            break          # reached the final letter; marks after it are its own
+    return "".join(reversed(marks))
 
 
 # Hamza and alef forms a diacritizer may add or change. Folding these lets an
@@ -113,6 +258,21 @@ def fold_orthography(word: str) -> str:
 
 def match_key(word: str) -> str:
     """Key under which an input word and its diacritized form should agree."""
+    return fold_orthography(strip_diacritics(word))
+
+
+def word_identity(word: str) -> str:
+    """The lexicon key for a word, folding spellings that are one word.
+
+    The corpus writes the feminine ending both ways: مدينة and مدينه are the
+    same word, and so are الحكاية and الحكايه. Keyed by their raw spelling
+    they become two entries with two code sets, which splits the training data
+    for one word and, because CATT diacritizes the ة spelling well and the ه
+    spelling badly, lets the bad half define its own readings.
+
+    Alef-maqsura and hamza forms fold for the same reason. This is identity
+    only: the text the model reads is never rewritten.
+    """
     return fold_orthography(strip_diacritics(word))
 
 
@@ -189,20 +349,21 @@ def clean_marks(pairs: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     if len(out) >= 2 and out[0][0] == "\u0627" and out[1][0] == "\u0644":
         out[1] = (out[1][0], "")
 
-    # 4. Taa marbuta takes no vowel of its own, and the mark on the letter
-    #    before it is a case ending. CATT flips these freely: وَصْفَه vs وَصْفُه,
-    #    عَمَلُه vs عَمَلَه, قَبِيلَه vs قَبِيلُه are the same word each time.
-    #    Egyptian speech drops case endings, so none of this is contrastive.
-    # Both \u0629 and \u0647 are checked: the text normalizer folds \u0629 to \u0647, so by this
-    # point most feminine endings are spelled with heh.
-    if out and out[-1][0] in ("\u0629", "\u0647"):
+    # 4. Taa marbuta and word-final heh take no vowel of their own, and the mark
+    #    on the letter before is a case ending. CATT flips these freely:
+    #    وَصْفَه vs وَصْفُه, عَمَلُه vs عَمَلَه are the same word each time,
+    #    and Egyptian speech drops case endings, so none of it is contrastive.
+    #
+    #    The corpus spells this ending both ways (مدينة / مدينه) for the same
+    #    word, so both letters are handled here and word identity folds them
+    #    together upstream. The one real contrast here, sukun on a final ة
+    #    meaning the /t/ surfaces (مَدِينَةْ = /madiinat/), is carried by
+    #    letter_variants as a phoneme feature rather than by the vowel pattern,
+    #    so clearing it here loses nothing and keeps the pattern free of it.
+    if out and out[-1][0] in (TAA_MARBUTA, "ه"):
         out[-1] = (out[-1][0], "")
         if len(out) >= 2:
-            # The mark on the letter before a final \u0629/\u0647 is a case ending, and
-            # shadda there is gemination CATT applies inconsistently
-            # (\u0645\u0650\u064a\u0629 vs \u0645\u0650\u064a\u064e\u0651\u0629). Neither is contrastive in Egyptian.
             out[-2] = (out[-2][0], "")
-
     # 5. Shadda on the final cluster. Gemination is phonemic in general, which
     #    is why it survives elsewhere, but CATT is inconsistent about it at the
     #    very end of a word (مِية vs مِيَّة) where Egyptian does not contrast it.
@@ -253,6 +414,17 @@ def vowel_pattern(word: str, drop_case_ending: bool = True) -> str:
         )
         parts.append(norm or "-")
     return "|".join(parts)
+
+
+def _pattern_slots(pairs: List[Tuple[str, str]]) -> List[str]:
+    """The per-letter slot strings a vowel pattern is built from."""
+    out = []
+    for _, marks in pairs:
+        norm = ("+" if SHADDA in marks else "") + "".join(
+            sorted(m for m in marks if m != SHADDA)
+        )
+        out.append(norm or "-")
+    return out
 
 
 @dataclass
@@ -393,11 +565,14 @@ def collect_readings(
             pat = vowel_pattern(d)
             if not pat:
                 continue  # no diacritics at all: nothing to learn
-            seen[p][pat] += 1
-            example.setdefault((p, pat), d)
-            left = plain[i - 1] if i > 0 else "<s>"
-            right = plain[i + 1] if i + 1 < len(plain) else "</s>"
-            contexts[p][(left, right)][pat] += 1
+            # Key by folded identity so the two spellings of a feminine ending
+            # are one word rather than two half-populated entries.
+            key = word_identity(p)
+            seen[key][pat] += 1
+            example.setdefault((key, pat), d)
+            left = word_identity(plain[i - 1]) if i > 0 else "<s>"
+            right = word_identity(plain[i + 1]) if i + 1 < len(plain) else "</s>"
+            contexts[key][(left, right)][pat] += 1
 
     readings: Dict[str, WordReadings] = {}
     for word, counter in seen.items():
@@ -446,8 +621,20 @@ class ReadingLexicon:
     def __len__(self) -> int:
         return len(self.entries)
 
-    def n_codes(self, word: str) -> int:
+    def get(self, word: str) -> Optional["WordReadings"]:
+        """The entry for a word, folding spelling variants onto one key.
+
+        Entries are keyed by :func:`word_identity`, so a caller holding the raw
+        spelling (مدينة where the entry is under مدينه) still finds it. The raw
+        key is tried first so a lexicon built before folding still loads.
+        """
         e = self.entries.get(word)
+        if e is not None:
+            return e
+        return self.entries.get(word_identity(word))
+
+    def n_codes(self, word: str) -> int:
+        e = self.get(word)
         return e.n_codes if e is not None else 1
 
     def is_ambiguous(self, word: str) -> bool:
@@ -458,8 +645,86 @@ class ReadingLexicon:
         return sorted(w for w, e in self.entries.items() if e.n_codes > 1)
 
     def code_of(self, word: str, diacritized: str) -> int:
-        e = self.entries.get(word)
+        e = self.get(word)
         return e.code_of(diacritized) if e is not None else 0
+
+    def code_from_partial_marks(self, word: str) -> Tuple[int, str]:
+        """Resolve a code from however many diacritics the user actually typed.
+
+        This is the override channel. Asking someone to pass a code integer
+        requires them to know that code 1 means عِلْم, which is unknowable: codes
+        are assigned by corpus frequency and change when the lexicon is rebuilt.
+        Writing the vowel is the interface people already have.
+
+        ``word`` is one token carrying some marks, e.g. مُصِرّ or just مُصِر. A
+        full diacritization is not required: whatever marks are present are
+        compared against each known reading, and positions left bare count as
+        "no opinion" rather than as an assertion of vowellessness.
+
+        The user's word is reduced with :func:`vowel_pattern`, the same function
+        that produced every stored pattern, so the two are always in the same
+        space. That reduction deliberately discards the word-initial position
+        (where diacritizers emit spurious marks) and the case ending (which
+        Egyptian drops), so a mark typed on either is uninformative here. It is
+        not wrong, just not something the lexicon distinguishes, so it is
+        skipped rather than counted as a conflict.
+
+        Returns ``(code, reason)``. A code of -1 means unresolved, with the
+        reason, so a caller reports it rather than silently mispronouncing.
+        """
+        e = self.get(word)
+        if e is None:
+            return -1, "word not in the lexicon"
+        if e.n_codes == 1:
+            return 0, "single reading"
+
+        raw = letter_marks(word)
+        if not any(mk for _, mk in raw):
+            return -1, "no diacritics supplied"
+
+        # Same reduction as every stored pattern, so slots are comparable.
+        user_slots = vowel_pattern(word).split("|")
+        supplied = [bool(mk) for _, mk in raw]
+        if len(supplied) != len(user_slots):
+            return -1, "could not parse the marks given"
+
+        scored: List[Tuple[int, int, int]] = []     # (agree, conflict, code)
+        for code, pat in enumerate(e.patterns):
+            slots = pat.split("|")
+            if len(slots) != len(user_slots):
+                continue
+            agree = conflict = 0
+            for i, (us, theirs) in enumerate(zip(user_slots, slots)):
+                if not supplied[i]:
+                    continue            # user said nothing about this letter
+                if us == "-" and theirs == "-":
+                    # A position the reduction discards on both sides: the mark
+                    # was given but carries no distinction here.
+                    continue
+                if us == theirs:
+                    agree += 1
+                else:
+                    conflict += 1
+            scored.append((agree, conflict, code))
+
+        if not scored:
+            return -1, "marks do not line up with any known reading"
+
+        # A conflict means the user stated a vowel that reading does not have.
+        clean = [s for s in scored if s[1] == 0 and s[0] > 0]
+        if not clean:
+            if not any(s[0] or s[1] for s in scored):
+                return -1, (
+                    "the marks given fall on positions the lexicon does not "
+                    "distinguish (word-initial letter or case ending); mark an "
+                    "interior vowel instead"
+                )
+            return -1, "marks conflict with every known reading"
+        clean.sort(key=lambda s: -s[0])
+        best = clean[0]
+        if len([s for s in clean if s[0] == best[0]]) > 1:
+            return -1, "marks match several readings equally"
+        return best[2], f"matched {best[0]} mark(s) with no conflict"
 
     def save(self, path: Path) -> None:
         path = Path(path)

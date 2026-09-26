@@ -59,6 +59,7 @@ from adaptts.utils.logging_utils import (  # noqa: E402
     setup_logging,
 )
 from adaptts.utils.preflight import check_preprocessing  # noqa: E402
+from adaptts.text.diacritics import N_VARIANTS  # noqa: E402
 from adaptts.utils.config import load_config, save_config  # noqa: E402
 
 enable_utf8_console()
@@ -100,6 +101,7 @@ def evaluate(model, loader, cfg, device, max_batches: int) -> Dict[str, float]:
                 make_speaker(batch, cfg, device), batch["char_padding_mask"],
                 batch["frame_mask"], cfg_dropout=0.0,
                 monotonic_strength=cfg.acoustic.monotonic_prior_weight,
+                variants=batch.get("variants"),
             )
             _, stats = acoustic_loss(
                 out, batch["codes"], batch["frame_mask"], cfg.acoustic.rvq_loss_weights,
@@ -327,6 +329,7 @@ def main() -> None:
         pc_embed_dim=cfg.acoustic.pc_embed_dim,
         exit_layers=cfg.acoustic.exit_layers,
         pad_id=vocab.pad_id,
+        n_variants=N_VARIANTS,
     ).to(device)
     total, _ = count_parameters(model)
     log_table(
@@ -393,6 +396,7 @@ def main() -> None:
                     make_speaker(batch, cfg, device), batch["char_padding_mask"],
                     batch["frame_mask"], cfg_dropout=cfg.acoustic.cfg_dropout,
                     monotonic_strength=cfg.acoustic.monotonic_prior_weight,
+                    variants=batch.get("variants"),
                 )
                 loss, stats = acoustic_loss(
                     out, batch["codes"], batch["frame_mask"], cfg.acoustic.rvq_loss_weights,

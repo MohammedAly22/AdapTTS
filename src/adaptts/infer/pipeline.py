@@ -41,6 +41,86 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _first(*values: Any) -> Any:
+    """The first value that is not None.
+
+    Gives control knobs a consistent precedence: an explicit call argument, then
+    whatever the plan carries, then the config default.
+    """
+    for v in values:
+        if v is not None:
+            return v
+    return None
+
+
+def split_user_diacritics(
+    text: str, lexicon: Optional["ReadingLexicon"]
+) -> Tuple[str, Dict[int, int], Dict[int, str]]:
+    """Separate a user's optional diacritics from the text the model reads.
+
+    This is the override channel. The system never requires diacritized input,
+    but a user who hears a wrong reading can fix it by writing the vowels on
+    that one word:
+
+        انا كنت مصر على ان مصر عندها امكانيات        -> the model decides both
+        انا كنت مُصِرّ على ان مصر عندها امكانيات      -> first pinned, second free
+
+    That is a better interface than passing a code number, because codes are
+    assigned by corpus frequency: nobody can know that code 1 means مُصِرّ, and
+    the answer changes when the lexicon is rebuilt.
+
+    Returns ``(bare_text, overrides, unresolved, variants)``:
+
+    * ``bare_text`` has every diacritic removed, so the model's input
+      distribution is exactly what it was trained on. Diacritics never reach
+      the model as characters.
+    * ``overrides`` maps word index -> code for marks that resolved.
+    * ``unresolved`` maps word index -> the reason it did not, so the caller can
+      say so instead of silently mispronouncing.
+    * ``variants`` is one phoneme-variant code per character of ``bare_text``,
+      carrying a ``~`` on ق/ج/ف or a sounded final /t/ through to the model.
+    """
+    from ..text.diacritics import letter_marks, strip_diacritics
+
+    from ..text.diacritics import letter_variants, normalize_variant_marks
+
+    overrides: Dict[int, int] = {}
+    unresolved: Dict[int, str] = {}
+    bare_words: List[str] = []
+    variant_parts: List[List[int]] = []
+
+    for i, token in enumerate(text.split()):
+        bare = strip_diacritics(token)
+        bare_words.append(bare)
+        # Phoneme variants the user asked for: a ~ on ق/ج/ف, or sukun on a final
+        # ة to sound the /t/. Kept even when the reading itself is left to the
+        # model, since the two are independent.
+        v = letter_variants(normalize_variant_marks(token))
+        variant_parts.append(v if len(v) == len(bare) else [0] * len(bare))
+        # Did the user actually mark anything on this word?
+        if not any(mk for _, mk in letter_marks(token)):
+            continue
+        if lexicon is None:
+            unresolved[i] = "no lexicon loaded"
+            continue
+        code, reason = lexicon.code_from_partial_marks(token)
+        if code >= 0:
+            # A single-reading word needs no override; recording one would
+            # imply a choice that does not exist.
+            if lexicon.n_codes(bare) > 1:
+                overrides[i] = code
+        else:
+            unresolved[i] = reason
+
+    # Flatten to one code per character of the joined text, including the spaces.
+    flat: List[int] = []
+    for j, part in enumerate(variant_parts):
+        if j:
+            flat.append(0)          # the separating space
+        flat.extend(part)
+    return " ".join(bare_words), overrides, unresolved, flat
+
+
 def prepare_inputs(
     text: str,
     vocab: CharVocab,
@@ -48,7 +128,17 @@ def prepare_inputs(
     device: torch.device,
     cfg: Optional[Config] = None,
 ) -> Dict[str, torch.Tensor]:
-    """Normalize and tensorize one sentence for batch size 1."""
+    """Normalize and tensorize one sentence for batch size 1.
+
+    Any diacritics in ``text`` are read as pronunciation overrides and then
+    removed, so what reaches the model is always undiacritized.
+    """
+    # Before normalization, which would discard the marks entirely.
+    text, user_overrides, unresolved, variant_codes = split_user_diacritics(
+        text, lexicon
+    )
+    pre_norm_len = len(text)
+
     if cfg is not None:
         text = normalize_text(
             text,
@@ -68,9 +158,22 @@ def prepare_inputs(
     n_codes = [
         lexicon.n_codes(w) if lexicon is not None else 1 for w in words
     ]
+
+    # Variants are indexed by character of the pre-normalization text. If
+    # normalization changed the length (a digit expanded to words, say) the
+    # mapping no longer holds, so drop them rather than attach a /v/ to the
+    # wrong letter. char_ids carries BOS and EOS, hence the offset of one.
+    variants = torch.zeros(1, len(ids), dtype=torch.long, device=device)
+    if len(text) == pre_norm_len and len(variant_codes) == len(text):
+        body = torch.tensor(variant_codes, dtype=torch.long, device=device)
+        variants[0, 1 : 1 + body.numel()] = body
+
     return {
         "text": text,
         "words": words,
+        "user_overrides": user_overrides,
+        "unresolved_marks": unresolved,
+        "variants": variants,
         "char_ids": torch.tensor(ids, dtype=torch.long, device=device).unsqueeze(0),
         "word_index": torch.tensor(widx, dtype=torch.long, device=device).unsqueeze(0),
         "n_codes": torch.tensor(n_codes, dtype=torch.long, device=device).unsqueeze(0),
@@ -91,6 +194,9 @@ class WordPlan:
     code: int
     probs: List[float]
     difficulty: float
+    # True when this reading came from diacritics the user typed rather than
+    # from the model, so the plan can show which decisions are the model's.
+    from_user: bool = False
 
     @property
     def is_ambiguous(self) -> bool:
@@ -111,12 +217,85 @@ class SynthesisPlan:
     depth: int
     inputs: Dict[str, torch.Tensor] = field(repr=False, default_factory=dict)
     overrides: Dict[int, int] = field(default_factory=dict)
+    # Words where the user wrote diacritics that could not be resolved, with the
+    # reason. Reported rather than silently ignored.
+    unresolved_marks: Dict[int, str] = field(default_factory=dict)
+    # Per-sentence generation controls. None means "use the config default".
+    tempo: Optional[float] = None
+    cfg_scale: Optional[float] = None
+    temperature: Optional[float] = None
 
     # -- inspection ----------------------------------------------------
 
     @property
     def hard_words(self) -> List[WordPlan]:
         return [w for w in self.words if w.is_ambiguous]
+
+    def complexity_table(self) -> List[Dict[str, Any]]:
+        """Per-word compute and difficulty, as rows ready to print or plot.
+
+        This is where the adaptive claim is falsifiable. A word with one known
+        reading should be cheap and a homograph should not; if they cost the
+        same, the difficulty head has learned nothing and the adaptive-depth
+        story is empty. Exposing it makes that visible rather than asserted.
+
+        ``depth`` is the depth this word's difficulty alone would select, which
+        is not necessarily the sentence's depth: generation runs at one depth
+        for the whole sentence, and the per-word number shows what is driving
+        it.
+        """
+        rows: List[Dict[str, Any]] = []
+        for w in self.words:
+            rows.append({
+                "index": w.index,
+                "word": w.word,
+                "readings": w.n_codes,
+                "code": w.code if w.is_ambiguous else None,
+                "confidence": w.confidence if w.is_ambiguous else None,
+                "difficulty": w.difficulty,
+                "depth": self._depth_for(w.difficulty),
+                "source": ("user" if w.from_user
+                           else "model" if w.is_ambiguous else "unambiguous"),
+            })
+        return rows
+
+    def _depth_for(self, difficulty: float) -> Optional[int]:
+        """Which exit this difficulty maps to, if the thresholds are known."""
+        thr = getattr(self, "_depth_thresholds", None)
+        if not thr:
+            return None
+        exits, tau_low, tau_high = thr
+        if difficulty <= tau_low:
+            return exits[0]
+        if difficulty <= tau_high:
+            return exits[min(1, len(exits) - 1)]
+        return exits[-1]
+
+    def complexity_report(self) -> str:
+        """The complexity table as text, hardest words first."""
+        rows = self.complexity_table()
+        lines = [
+            f"text: {self.text}",
+            f"sentence difficulty {self.sentence_difficulty:.3f} -> depth {self.depth}",
+            "",
+            f"{'#':>3}  {'word':<16}{'read':>5}{'diff':>8}{'depth':>7}"
+            f"{'conf':>8}  source",
+            "-" * 62,
+        ]
+        for r in sorted(rows, key=lambda r: -r["difficulty"]):
+            conf = f"{r['confidence']:.3f}" if r["confidence"] is not None else "-"
+            depth = r["depth"] if r["depth"] is not None else "-"
+            lines.append(
+                f"{r['index']:>3}  {r['word']:<16}{r['readings']:>5}"
+                f"{r['difficulty']:>8.3f}{str(depth):>7}{conf:>8}  {r['source']}"
+            )
+        if self.unresolved_marks:
+            lines.append("")
+            lines.append("diacritics that could not be applied:")
+            for i, why in sorted(self.unresolved_marks.items()):
+                word = self.words[i].word if 0 <= i < len(self.words) else f"#{i}"
+                lines.append(f"  {word}: {why}")
+        return "\n".join(lines)
 
     def __str__(self) -> str:
         lines = [
@@ -186,8 +365,71 @@ class SynthesisPlan:
             self.overrides[i] = code
         return self
 
+    def set_reading(self, word: str, diacritized: str) -> "SynthesisPlan":
+        """Pin a reading by writing the vowels, not by picking a code number.
+
+            plan.set_reading("مصر", "مُصِرّ")
+
+        The same channel as typing diacritics in the input text, available on an
+        existing plan so a correction does not require re-analysis. Raises with
+        the reason when the marks cannot be resolved, rather than guessing.
+        """
+        lex = getattr(self, "_lexicon", None)
+        if lex is None:
+            raise RuntimeError("this plan has no lexicon attached")
+        code, reason = lex.code_from_partial_marks(diacritized)
+        if code < 0:
+            raise ValueError(f"cannot resolve {diacritized!r}: {reason}")
+        return self.set_code(word, code)
+
     def set_depth(self, depth: int) -> "SynthesisPlan":
+        """Fix the generation depth, overriding the adaptive choice."""
         self.depth = depth
+        return self
+
+    def set_budget(self, budget: float) -> "SynthesisPlan":
+        """Cap compute as a fraction of the deepest exit, in [0, 1].
+
+        A budget does not force a depth; it sets a ceiling. An easy sentence
+        still runs shallow, so this trades quality for speed only where the
+        model actually wanted the compute.
+        """
+        if not 0.0 < budget <= 1.0:
+            raise ValueError(f"budget must be in (0, 1], got {budget}")
+        exits = getattr(self, "_exit_layers", None)
+        if not exits:
+            raise RuntimeError("this plan has no exit layers attached")
+        ceiling = max(exits[0], int(round(max(exits) * budget)))
+        allowed = [e for e in exits if e <= ceiling] or [exits[0]]
+        self.depth = min(self.depth, max(allowed))
+        return self
+
+    def set_tempo(self, tempo: float) -> "SynthesisPlan":
+        """Speaking rate, where 1.0 is the model's own pace.
+
+        Above 1.0 is faster, below is slower. Applied by scaling the duration
+        the model predicts, so prosody is preserved rather than resampled.
+        """
+        if not 0.25 <= tempo <= 4.0:
+            raise ValueError(f"tempo must be in [0.25, 4.0], got {tempo}")
+        self.tempo = tempo
+        return self
+
+    def set_cfg_scale(self, scale: float) -> "SynthesisPlan":
+        """How strongly to follow the conditioning, including a reference voice.
+
+        1.0 disables guidance. Higher values track the reference more closely at
+        some cost in naturalness.
+        """
+        if not 0.0 <= scale <= 10.0:
+            raise ValueError(f"cfg_scale must be in [0, 10], got {scale}")
+        self.cfg_scale = scale
+        return self
+
+    def set_temperature(self, t: float) -> "SynthesisPlan":
+        if not 0.0 <= t <= 2.0:
+            raise ValueError(f"temperature must be in [0, 2], got {t}")
+        self.temperature = t
         return self
 
     def pc_per_char(self, max_codes: int) -> torch.Tensor:
@@ -303,8 +545,19 @@ class AdapTTS:
                 WordPlan(i, w, int(n_codes[0, i]), 0, [1.0], 0.0)
                 for i, w in enumerate(words)
             ]
-            return SynthesisPlan(inp["text"], plans, 0.0,
+            plan = SynthesisPlan(inp["text"], plans, 0.0,
                                  depth or self.cfg.acoustic.n_layers, inp)
+            plan._lexicon = self.lexicon
+            plan._exit_layers = list(self.cfg.acoustic.exit_layers)
+            # Without a context encoder there is no difficulty signal, so no
+            # thresholds either; complexity_table reports depth as unknown.
+            plan.unresolved_marks = dict(inp.get("unresolved_marks") or {})
+            for i, code in (inp.get("user_overrides") or {}).items():
+                if 0 <= i < len(plan.words) and 0 <= code < plan.words[i].n_codes:
+                    plan.words[i].code = code
+                    plan.overrides[i] = code
+                    plan.words[i].from_user = True
+            return plan
 
         out = self.context_encoder(
             inp["char_ids"], inp["word_index"], n_codes, inp["char_padding_mask"]
@@ -327,7 +580,34 @@ class AdapTTS:
         word_mask = torch.ones_like(n_codes, dtype=torch.bool)
         sent_diff = float(self.context_encoder.sentence_difficulty(out.difficulty, word_mask)[0])
         chosen = depth if depth else self.select_depth(sent_diff)
-        return SynthesisPlan(inp["text"], plans, sent_diff, chosen, inp)
+        plan = SynthesisPlan(inp["text"], plans, sent_diff, chosen, inp)
+        # Attached so the plan can resolve later corrections and report the
+        # depth each word's difficulty would select.
+        plan._lexicon = self.lexicon
+        plan._exit_layers = list(self.cfg.acoustic.exit_layers)
+        plan._depth_thresholds = (
+            list(self.cfg.acoustic.exit_layers),
+            self.cfg.inference.tau_low,
+            self.cfg.inference.tau_high,
+        )
+
+        # Apply any reading the user pinned by writing diacritics. This happens
+        # after the model has run, so the plan still reports what the model
+        # would have chosen on its own and the override is visible as such.
+        plan.unresolved_marks = dict(inp.get("unresolved_marks") or {})
+        for i, code in (inp.get("user_overrides") or {}).items():
+            if 0 <= i < len(plan.words) and 0 <= code < plan.words[i].n_codes:
+                plan.words[i].code = code
+                plan.overrides[i] = code
+                plan.words[i].from_user = True
+            else:
+                # Token count changed in normalization, so the index no longer
+                # refers to the same word. Better to report than to pin the
+                # wrong one.
+                plan.unresolved_marks[i] = (
+                    "word position shifted during normalization"
+                )
+        return plan
 
     def select_depth(self, difficulty: float) -> int:
         """Map sentence difficulty onto one of the trained exit depths.
@@ -355,8 +635,14 @@ class AdapTTS:
         temperature: Optional[float] = None,
         cfg_scale: Optional[float] = None,
         seed: Optional[int] = None,
+        tempo: Optional[float] = None,
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
-        """Render a plan (or a raw string) to a waveform."""
+        """Render a plan (or a raw string) to a waveform.
+
+        Explicit arguments win over values set on the plan, which in turn win
+        over the config defaults, so a caller can override one knob without
+        restating the others.
+        """
         if self.acoustic is None or self.codec is None:
             raise RuntimeError(
                 "synthesis needs both an acoustic checkpoint and the codec; "
@@ -378,9 +664,11 @@ class AdapTTS:
         codes, stats = self.acoustic.generate(
             plan.inputs["char_ids"], pc, speaker, plan.inputs["char_padding_mask"],
             depth=plan.depth,
-            temperature=temperature if temperature is not None else ic.temperature,
+            temperature=_first(temperature, plan.temperature, ic.temperature),
             top_k=ic.top_k, top_p=ic.top_p,
-            cfg_scale=cfg_scale if cfg_scale is not None else ic.cfg_scale,
+            cfg_scale=_first(cfg_scale, plan.cfg_scale, ic.cfg_scale),
+            tempo=_first(tempo, plan.tempo, 1.0),
+            variants=plan.inputs.get("variants"),
             monotonic_strength=self.cfg.acoustic.monotonic_prior_weight,
             repetition_window=ic.repetition_window,
             repetition_max_repeats=ic.repetition_max_repeats,

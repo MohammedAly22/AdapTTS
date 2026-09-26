@@ -214,6 +214,9 @@ tests = [
     "tests/test_egyptian.py",     # text normalization, the waw rule
     "tests/test_models.py",       # causality, KV cache, masking
     "tests/test_data.py",         # collation, bucketing, config
+    "tests/test_diacritics.py",   # reading labels, artifact suppression
+    "tests/test_phonology.py",    # variants, taa marbuta, partial overrides
+    "tests/test_control.py",      # controllability and the complexity view
     "tests/test_end_to_end.py",   # does it actually learn to disambiguate
     "tests/test_integration.py",  # the real pipeline on synthetic data
 ]
@@ -1005,24 +1008,138 @@ that the acoustic model was trained to consume.
     code("""
 from IPython.display import Audio, display
 
+# The model decides on its own from context.
 plan = tts.analyze("انا شوفت علم مصر بيرفرف")
+print(plan)
 wav, st = tts.synthesize(plan)
-print("model's own choice, code", plan.hard_words[0].code)
-display(Audio(wav, rate=st["sample_rate"]))
-
-plan.set_code("علم", 1)      # force the other reading
-wav, st = tts.synthesize(plan)
-print("forced to code 1")
 display(Audio(wav, rate=st["sample_rate"]))
 """),
+    md("""
+### Correcting a reading: write the vowels, not a code number
+
+If a reading is wrong, add diacritics to that one word. Nothing else changes, and
+the rest of the sentence stays undiacritized.
+
+```
+انا كنت مصر على ان مصر عندها امكانيات          # model decides both
+انا كنت مُصِرّ على ان مصر عندها امكانيات        # first pinned, second free
+```
+
+Why not a code number? Codes are assigned by corpus frequency, so there is no way
+to know that code 1 means مُصِرّ, and the answer changes whenever the lexicon is
+rebuilt. Writing the vowel is the notation people already use.
+
+**The diacritics never reach the model.** They are read as instructions, resolved
+to a code, and stripped, so the model's input is identical either way. A partial
+marking is enough: only the letters that distinguish the readings matter.
+"""),
     code("""
-# When a word appears twice with different readings, target one occurrence.
-plan = tts.analyze("انا كنت مصر على ان مصر عندها امكانيات")
-print(plan)
-plan.set_code("مصر", 0, occurrence=0)   # first مصر only
-plan.set_code("مصر", 1, occurrence=1)   # second مصر only
-wav, st = tts.synthesize(plan)
-display(Audio(wav, rate=st["sample_rate"]))
+free   = "انا كنت مصر على ان مصر عندها امكانيات"
+pinned = "انا كنت مُصِرّ على ان مصر عندها امكانيات"
+
+for label, txt in [("model decides", free), ("first word pinned", pinned)]:
+    plan = tts.analyze(txt)
+    print(f"--- {label} ---")
+    print("  text the model sees:", plan.text)
+    for w in plan.hard_words:
+        src = "user" if w.from_user else "model"
+        print(f"    #{w.index} {w.word}: code {w.code} ({src}), "
+              f"confidence {w.confidence:.3f}")
+    if plan.unresolved_marks:
+        print("  could not apply:", plan.unresolved_marks)
+    print()
+"""),
+    code("""
+# Listen to the difference the correction makes.
+for label, txt in [("model's choice", free), ("corrected", pinned)]:
+    plan = tts.analyze(txt)
+    wav, st = tts.synthesize(plan)
+    print(label)
+    display(Audio(wav, rate=st["sample_rate"]))
+"""),
+    code("""
+# A correction that cannot be resolved is reported, never guessed at.
+for attempt in ["مُصِرّ", "مصِر", "مُصر", "مصُر"]:
+    code_, reason = tts.lexicon.code_from_partial_marks(attempt)
+    verdict = f"code {code_}" if code_ >= 0 else "unresolved"
+    print(f"  {attempt:<8} -> {verdict:<12} {reason}")
+"""),
+    md("""
+### Phoneme variants
+
+Some letters have a second realisation that the diacritizer marks and the model
+learns. Type `~` after the letter to force it:
+
+| Written | Effect |
+|---|---|
+| `ق~` | qaf pronounced as a glottal stop, as in دلوق~تي |
+| `ج~` | geem as /zh/ rather than /g/, as in تكنولوج~يا |
+| `ف~` | faa as /v/, as in ف~يديو |
+| `...ةْ` | sukun on a final ة sounds the /t/: مَدِينَةْ is /madiinat/, مَدِينَة is /madiina/ |
+
+These are independent of the reading: a word can take a variant without being
+ambiguous at all.
+"""),
+    code("""
+for txt in ["دلوقتي احنا مشغولين", "دلوق~تي احنا مشغولين",
+            "المدينة كبيره", "المدينةْ كبيره"]:
+    plan = tts.analyze(txt)
+    v = plan.inputs["variants"][0].tolist()
+    marked = [(i, c) for i, c in enumerate(v) if c]
+    print(f"{txt:<26} variants at {marked}")
+"""),
+    md("""
+## 2b. The complexity view
+
+Where the compute goes, per word. This is the adaptive claim made checkable: a
+word with one reading should be cheap, a homograph should not.
+
+If single-reading words cost as much as homographs, the difficulty head has
+learned nothing and the adaptive-depth story is empty.
+"""),
+    code("""
+print(tts.analyze(
+    "انا كنت مصر على ان مصر عندها امكانيات و موارد تخليها تتفوق على دول"
+).complexity_report())
+"""),
+    code("""
+# Easy sentence against hard sentence: the depth should differ.
+for txt in ["الجو النهارده حلو", free]:
+    plan = tts.analyze(txt)
+    n_amb = len(plan.hard_words)
+    print(f"difficulty {plan.sentence_difficulty:.3f} -> depth {plan.depth}  "
+          f"({n_amb} ambiguous)  {txt[:44]}")
+"""),
+    md("""
+## 2c. The other controls
+
+| Control | What it does |
+|---|---|
+| `set_tempo(x)` | speaking rate; 1.0 is the model's own pace |
+| `set_cfg_scale(x)` | how strongly to follow the conditioning / reference voice |
+| `set_budget(f)` | compute ceiling as a fraction of the deepest exit |
+| `set_depth(n)` | fix the depth, overriding adaptivity |
+| `set_temperature(x)` | sampling randomness |
+
+A budget is a ceiling, not a target: an easy sentence still runs shallow, so it
+trades quality for speed only where the model wanted the compute.
+"""),
+    code("""
+plan = tts.analyze(free)
+print("adaptive depth:", plan.depth, "of", list(cfg.acoustic.exit_layers))
+
+for t in [0.8, 1.0, 1.3]:
+    p = tts.analyze(free).set_tempo(t)
+    wav, st = tts.synthesize(p)
+    print(f"tempo {t}: {st['audio_seconds']:.2f}s audio, "
+          f"RTF {st['total_seconds']/st['audio_seconds']:.3f}")
+    display(Audio(wav, rate=st["sample_rate"]))
+"""),
+    code("""
+# A budget lowers the depth; it can never raise it.
+for b in [0.4, 0.7, 1.0]:
+    p = tts.analyze(free).set_budget(b)
+    print(f"budget {b} -> depth {p.depth}")
 """),
     md("""
 ## 3. Benchmark on CPU

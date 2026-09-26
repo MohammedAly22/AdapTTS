@@ -79,6 +79,7 @@ class TextEncoder(nn.Module):
         pc_embed_dim: int,
         dropout: float = 0.1,
         pad_id: int = 0,
+        n_variants: int = 0,
     ) -> None:
         super().__init__()
         self.char_embed = nn.Embedding(vocab_size, d_model, padding_idx=pad_id)
@@ -86,6 +87,23 @@ class TextEncoder(nn.Module):
         self.pc_embed = nn.Embedding(max_codes + 1, pc_embed_dim)
         self.pc_null = max_codes
         self.pc_proj = nn.Linear(pc_embed_dim, d_model, bias=False)
+        # Phoneme variants: a per-character marker that this letter takes a
+        # non-default realisation. Measured on CATT output, the triple dot marks
+        # ق as hamza, ج as /zh/ and ف as /v/, and sukun on a final ة makes the
+        # /t/ surface (see PHONOLOGY.md).
+        #
+        # This is a separate channel from the pronunciation code on purpose. The
+        # code says *which reading of a word type*, which must stay clean
+        # because the diacritizer's mistakes there create fake homographs. The
+        # variant says *how this letter sounds*, where a mistake is only a local
+        # error the audio can outvote during training. Zero-initialised, so it
+        # starts as a no-op and a checkpoint trained without it loads unchanged.
+        self.n_variants = int(n_variants)
+        if self.n_variants > 0:
+            self.variant_embed = nn.Embedding(self.n_variants, d_model)
+            nn.init.zeros_(self.variant_embed.weight)
+        else:
+            self.variant_embed = None
         self.rope = RotaryEmbedding(d_model // n_heads)
         self.blocks = nn.ModuleList(
             [EncoderBlock(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)]
@@ -97,14 +115,19 @@ class TextEncoder(nn.Module):
         char_ids: torch.Tensor,
         pc_per_char: torch.Tensor,
         char_padding_mask: Optional[torch.Tensor] = None,
+        variants: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
             char_ids: ``[B, S]``
             pc_per_char: ``[B, S]`` pronunciation code of each character's word,
                 or ``max_codes`` where the character belongs to no ambiguous word.
+            variants: ``[B, S]`` optional phoneme-variant code per character,
+                0 meaning the default realisation.
         """
         x = self.char_embed(char_ids) + self.pc_proj(self.pc_embed(pc_per_char))
+        if self.variant_embed is not None and variants is not None:
+            x = x + self.variant_embed(variants.clamp(0, self.n_variants - 1))
         cos, sin = self.rope(char_ids.shape[1], device=char_ids.device)
         for blk in self.blocks:
             x = blk(x, rope=(cos, sin), key_padding_mask=char_padding_mask)
@@ -282,6 +305,7 @@ class AcousticModel(nn.Module):
         exit_layers: Sequence[int] = (4, 8, 12),
         pad_id: int = 0,
         parallel_depth: bool = True,
+        n_variants: int = 0,
     ) -> None:
         super().__init__()
         self.n_quantizers = n_quantizers
@@ -292,9 +316,11 @@ class AcousticModel(nn.Module):
         self.max_codes = max_codes
         self.speaker_dim = speaker_dim
 
+        self.n_variants = int(n_variants)
         self.text_encoder = TextEncoder(
             vocab_size, text_d_model, text_n_layers, text_n_heads,
             text_d_model * 3, max_codes, pc_embed_dim, dropout, pad_id,
+            n_variants=n_variants,
         )
         # Unconditional text memory for classifier-free guidance. Learned, so
         # the guided direction is meaningful rather than an arbitrary zero.
@@ -342,6 +368,15 @@ class AcousticModel(nn.Module):
         )
         self.apply(self._init)
 
+        # After the generic init, which randomises every embedding. The variant
+        # table has to start at zero so that adding this channel is a no-op
+        # until training gives it a reason not to be: a random init would shift
+        # every character's embedding by noise on a feature that is off for most
+        # of the corpus, and would make an older checkpoint behave differently
+        # after loading.
+        if getattr(self.text_encoder, "variant_embed", None) is not None:
+            nn.init.zeros_(self.text_encoder.variant_embed.weight)
+
     @staticmethod
     def _init(m: nn.Module) -> None:
         if isinstance(m, nn.Linear):
@@ -361,8 +396,9 @@ class AcousticModel(nn.Module):
         char_ids: torch.Tensor,
         pc_per_char: torch.Tensor,
         char_padding_mask: Optional[torch.Tensor] = None,
+        variants: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return self.text_encoder(char_ids, pc_per_char, char_padding_mask)
+        return self.text_encoder(char_ids, pc_per_char, char_padding_mask, variants)
 
     def predict_duration(
         self, mem: torch.Tensor, mem_padding_mask: Optional[torch.Tensor]
@@ -418,6 +454,7 @@ class AcousticModel(nn.Module):
         cfg_dropout: float = 0.0,
         monotonic_strength: float = 1.0,
         need_align: bool = False,
+        variants: Optional[torch.Tensor] = None,
     ) -> AcousticOutput:
         """Teacher-forced forward pass.
 
@@ -430,7 +467,7 @@ class AcousticModel(nn.Module):
             raise ValueError(f"expected {self.n_quantizers} quantizers, got {Q}")
         device = codes.device
 
-        mem = self.encode_text(char_ids, pc_per_char, char_padding_mask)
+        mem = self.encode_text(char_ids, pc_per_char, char_padding_mask, variants)
         if cfg_dropout > 0 and self.training:
             drop = torch.rand(B, device=device) < cfg_dropout
             null = self.null_text.expand(B, mem.shape[1], -1)
@@ -497,11 +534,20 @@ class AcousticModel(nn.Module):
         repetition_window: int = 12,
         repetition_max_repeats: int = 3,
         generator: Optional[torch.Generator] = None,
+        tempo: float = 1.0,
+        variants: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """Autoregressively sample Mimi codes.
 
+        ``tempo`` scales speaking rate: above 1.0 is faster, below is slower. It
+        acts on the predicted duration, which sets the frame budget, so the
+        model still chooses its own prosody within a shorter or longer window
+        rather than having the audio resampled afterwards.
+
         Returns ``(codes [B, T, Q], stats)``.
         """
+        if not 0.25 <= tempo <= 4.0:
+            raise ValueError(f"tempo must be in [0.25, 4.0], got {tempo}")
         B = char_ids.shape[0]
         device = char_ids.device
         depth = depth or self.n_layers
@@ -509,7 +555,7 @@ class AcousticModel(nn.Module):
             raise ValueError(f"depth {depth} is not one of exit_layers {self.exit_layers}")
         exit_idx = self.exit_layers.index(depth)
 
-        mem = self.encode_text(char_ids, pc_per_char, char_padding_mask)
+        mem = self.encode_text(char_ids, pc_per_char, char_padding_mask, variants)
         duration = self.predict_duration(mem, char_padding_mask)
         # Duration-anchored bounds. The predicted frame count brackets how long
         # the utterance may run, which is what stops the two classic failures:
@@ -519,7 +565,9 @@ class AcousticModel(nn.Module):
         if min_frames is not None and int(min_frames) < 0:
             raise ValueError(f"min_frames cannot be negative, got {min_frames}")
 
-        est = int(duration.max().item())
+        # Faster speech means fewer frames for the same text, so the budget
+        # scales inversely with tempo.
+        est = int(max(1.0, duration.max().item() / tempo))
         hi = int(max_frames) if max_frames is not None else max(8, int(est * 1.6))
         lo = int(min_frames) if min_frames is not None else max(4, int(est * 0.6))
         # An explicit max_frames is a hard ceiling: clamp the floor to it rather

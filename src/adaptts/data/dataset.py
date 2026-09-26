@@ -73,6 +73,8 @@ class Sample:
     codes: Optional[np.ndarray]  # [T, Q] Mimi codes
     teacher_hidden: Optional[np.ndarray]  # [W, H]
     n_words: int
+    # [L] phoneme-variant code per character, 0 = default realisation.
+    variants: Optional[np.ndarray] = None
 
 
 class AdapTTSDataset(Dataset):
@@ -112,6 +114,19 @@ class AdapTTSDataset(Dataset):
             for k, v in raw.items():
                 uid, widx = k.split("\t")
                 self.labels[(uid, int(widx))] = int(v)
+
+        # Per-character phoneme variants, written by stage A3. Optional: a cache
+        # built before this feature existed simply has none, and the model treats
+        # every character as the default realisation.
+        self.char_variants: Dict[str, str] = {}
+        vp = Path(cfg.paths.cache_dir) / "char_variants.json"
+        if vp.exists():
+            self.char_variants = json.load(open(vp, encoding="utf-8"))
+            n_marked = sum(1 for s in self.char_variants.values() if s.strip("0"))
+            logger.info(
+                "dataset[%s]: variant cache loaded, %d utterances carry a variant",
+                split, n_marked,
+            )
 
         self.codes: Optional[RaggedArray] = None
         self.code_index: Dict[str, int] = {}
@@ -200,6 +215,21 @@ class AdapTTSDataset(Dataset):
                 th = np.concatenate([th, pad], axis=0)
             th = th[:n_words]
 
+        # The variant string is indexed by character of the plain text, while
+        # char_ids carries a BOS and EOS around it, so the array is padded on
+        # both sides to line up. A length mismatch means the cache and the text
+        # disagree, and the safe reading is "no variants" rather than a shifted
+        # one that would attach a /v/ to the wrong letter.
+        variants = None
+        vs = self.char_variants.get(uid)
+        if vs is not None and len(vs) == len(text):
+            body = np.frombuffer(vs.encode("ascii"), dtype=np.uint8).astype(
+                np.int64
+            ) - ord("0")
+            variants = np.zeros(len(ids), dtype=np.int64)
+            # ids == [BOS] + text + [EOS]
+            variants[1 : 1 + len(body)] = body
+
         return Sample(
             uid=uid,
             char_ids=np.asarray(ids, dtype=np.int64),
@@ -209,6 +239,7 @@ class AdapTTSDataset(Dataset):
             codes=codes,
             teacher_hidden=th,
             n_words=n_words,
+            variants=variants,
         )
 
 
@@ -235,6 +266,9 @@ def collate(
     word_mask = np.zeros((B, W), dtype=bool)
     # Per-character pronunciation code; `max_codes` is the "no code" slot.
     pc_per_char = np.full((B, L), max_codes, dtype=np.int64)
+    # Per-character phoneme variant; 0 is the default realisation, which is also
+    # the right value for padding.
+    variants = np.zeros((B, L), dtype=np.int64)
 
     codes = np.zeros((B, T, n_quantizers), dtype=np.int64) if has_codes else None
     frame_mask = np.zeros((B, T), dtype=bool) if has_codes else None
@@ -250,6 +284,8 @@ def collate(
         n_codes[i, :w] = s.n_codes
         code_target[i, :w] = s.code_target
         word_mask[i, :w] = True
+        if s.variants is not None:
+            variants[i, :l] = s.variants[:l]
 
         # Broadcast the ground-truth code onto the characters of its word. An
         # unambiguous word, or one with no label, gets the null slot.
@@ -275,6 +311,7 @@ def collate(
         "code_target": torch.from_numpy(code_target),
         "word_mask": torch.from_numpy(word_mask),
         "pc_per_char": torch.from_numpy(pc_per_char),
+        "variants": torch.from_numpy(variants),
         "n_frames": torch.from_numpy(n_frames),
     }
     if has_codes:

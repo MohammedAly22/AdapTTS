@@ -207,6 +207,67 @@ Expect real-time factor near **0.1**, roughly 10x faster than real time.
 
 ---
 
+## Controlling the output
+
+The system never requires diacritized input. It reads undiacritized Egyptian and
+resolves each homograph from context. Diacritics are an *optional correction*.
+
+### Fixing a reading
+
+Write the vowels on the one word that came out wrong:
+
+```
+انا كنت مصر على ان مصر عندها امكانيات          # the model decides both
+انا كنت مُصِرّ على ان مصر عندها امكانيات        # first pinned, second free
+```
+
+The marks are read as an instruction, matched against that word's known readings,
+and then stripped: **the model's input is byte-identical either way**. A partial
+marking is enough, because only the letters that distinguish the readings matter.
+
+This replaces `set_code(word, 1)` as the recommended interface. Codes are
+assigned by corpus frequency, so nobody can know that code 1 means مُصِرّ, and the
+number changes when the lexicon is rebuilt. `set_reading("مصر", "مُصِرّ")` does the
+same thing on an existing plan.
+
+A correction that cannot be resolved is reported, never guessed:
+
+| Written | Result |
+|---|---|
+| `مُصِرّ` | code 1 |
+| `مصِر` | code 1 (the interior vowel is the distinction) |
+| `مُصر` | unresolved: the word-initial position carries no distinction |
+| `مصُر` | unresolved: matches no known reading |
+
+### Phoneme variants
+
+A `~` after ق, ج or ف forces its non-default realisation, and sukun on a final ة
+sounds the /t/. These are separate from the reading, and a word can take one
+without being ambiguous. See [PHONOLOGY.md](PHONOLOGY.md) for the measurements
+behind each.
+
+### The complexity view
+
+`plan.complexity_report()` prints, per word, its difficulty, the depth it maps to,
+its reading count and where the decision came from. This is the adaptive claim
+made checkable: single-reading words should be cheap and homographs expensive. If
+they cost the same, the difficulty head learned nothing.
+
+### The knobs
+
+| Control | Effect |
+|---|---|
+| `set_tempo(x)` | speaking rate, 1.0 being the model's own pace |
+| `set_cfg_scale(x)` | how strongly to follow the conditioning or reference voice |
+| `set_budget(f)` | compute ceiling as a fraction of the deepest exit |
+| `set_depth(n)` | fix the depth, overriding adaptivity |
+| `set_temperature(x)` | sampling randomness |
+
+A budget is a ceiling rather than a target, so an easy sentence still runs
+shallow and quality is traded for speed only where the model wanted the compute.
+
+---
+
 ## Cost
 
 | Stage | Time | Cost |

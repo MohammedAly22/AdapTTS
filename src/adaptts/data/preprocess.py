@@ -27,6 +27,8 @@ import numpy as np
 import torch
 
 from ..text.diacritics import (
+    letter_variants,
+    normalize_variant_marks,
     ReadingLexicon,
     align_tokens,
     collect_readings,
@@ -699,6 +701,46 @@ def build_reading_lexicon(
 
     with open(labels_path, "w", encoding="utf-8") as f:
         json.dump({f"{k[0]}\t{k[1]}": v for k, v in labels.items()}, f)
+
+    # Per-character phoneme variants, so the acoustic model can learn the
+    # patterns the diacritizer marks: ق as hamza, ج as /zh/, ف as /v/, and a
+    # word-final ة whose /t/ surfaces. These are deliberately NOT part of the
+    # pronunciation code: a code defines a reading of a word type and must stay
+    # clean, because a diacritizer error there invents a homograph. A variant is
+    # local to one letter, so an error is just noise the audio can outvote.
+    #
+    # Stored as one compact string per utterance, digits '0'..'9' per character
+    # of the plain text, which keeps the file small and needs no numpy cache.
+    variants_path = Path(cfg.paths.cache_dir) / "char_variants.json"
+    variant_rows: Dict[str, str] = {}
+    n_marked = 0
+    for r in progress(rows, desc="A3 variants", unit="utt"):
+        plain = r["text"].split()
+        # normalize_variant_marks keeps the phonemic marks and drops the noise,
+        # unlike strip_junk which removes both.
+        diac = align_tokens(
+            plain, normalize_variant_marks(r["diacritized"]).split()
+        )
+        per_char: List[str] = []
+        for wi, (word, dform) in enumerate(zip(plain, diac)):
+            if wi:
+                per_char.append("0")          # the space between words
+            v = letter_variants(dform) if dform else []
+            if len(v) != len(word):
+                # Alignment is per word, so a mismatch means this word's marks
+                # cannot be trusted; default to no variant rather than shifting
+                # every later character.
+                v = [0] * len(word)
+            n_marked += sum(1 for x in v if x)
+            per_char.extend(str(min(x, 9)) for x in v)
+        variant_rows[r["uid"]] = "".join(per_char)
+
+    with open(variants_path, "w", encoding="utf-8") as f:
+        json.dump(variant_rows, f)
+    logger.info(
+        "readings: %d characters carry a phoneme variant across %d utterances",
+        n_marked, len(variant_rows),
+    )
 
     n_amb = len(lex.ambiguous_words)
     logger.info(
