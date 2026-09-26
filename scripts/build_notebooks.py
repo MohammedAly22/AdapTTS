@@ -58,6 +58,11 @@ from adaptts.utils.logging_utils import setup_logging
 setup_logging()
 cfg = load_config(CONFIG)
 print("repo   :", REPO)
+# Printed because the CATT env exists alongside this one: notebook 01 calls the
+# CATT interpreter for one stage, and a shell that activated it would otherwise
+# hijack a bare `python`. Every stage below runs {sys.executable}, so it follows
+# the kernel rather than the shell.
+print("python :", sys.executable)
 print("config :", CONFIG, "->", cfg.name)
 print("dataset:", cfg.paths.hf_dataset_id)
 
@@ -427,7 +432,7 @@ if parquet and not wavs:
 Normalizes every transcript once, so alignment, the teacher and training all see
 byte-identical strings.
 """),
-    code("!python scripts/preprocess.py --config $CONFIG --stage manifest"),
+    code("!{sys.executable} scripts/preprocess.py --config $CONFIG --stage manifest"),
     code("""
 import json, collections
 
@@ -532,7 +537,7 @@ Finds the time span of every word with no pronunciation lexicon. The Viterbi
 alignment is implemented in-repo, so there is no Montreal Forced Aligner
 dependency.
 """),
-    code("!python scripts/preprocess.py --config $CONFIG --stage align"),
+    code("!{sys.executable} scripts/preprocess.py --config $CONFIG --stage align"),
     md("""
 ## Stage A3 - derive the readings
 
@@ -544,7 +549,7 @@ it survives the artifact filters and the context-agreement gate.
 
 Span embeddings (the old stage A2) are not needed for labels and are skipped.
 """),
-    code("!python scripts/preprocess.py --config $CONFIG --stage discover"),
+    code("!{sys.executable} scripts/preprocess.py --config $CONFIG --stage discover"),
     code("""
 from adaptts.text.diacritics import ReadingLexicon
 
@@ -621,14 +626,14 @@ If the promo-word check above shows a regression, stop. Do not train.
 One frozen MARBERTv2 pass over the corpus, cached as fp16. The teacher never
 runs again, which is the main reason training is cheap.
 """),
-    code("!python scripts/preprocess.py --config $CONFIG --stage teacher"),
+    code("!{sys.executable} scripts/preprocess.py --config $CONFIG --stage teacher"),
     md("""
 ## Stage A5 - Mimi codec encoding
 
 Every clip becomes 8 RVQ streams at 12.5 Hz. A 10 second clip is 125 frames,
 which is why generation is fast on a CPU.
 """),
-    code("!python scripts/preprocess.py --config $CONFIG --stage codec"),
+    code("!{sys.executable} scripts/preprocess.py --config $CONFIG --stage codec"),
     md("## Verify the cache is complete"),
     code("""
 from adaptts.data.dataset import AdapTTSDataset, collate
@@ -700,7 +705,7 @@ scores the baseline while having learned nothing.
 %tensorboard --logdir $cfg.paths.tb_dir --port 6006 --bind_all
 """),
     md("## Train"),
-    code("!python scripts/train_context.py --config $CONFIG"),
+    code("!{sys.executable} scripts/train_context.py --config $CONFIG"),
     md("""
 ## Evaluate what it learned
 
@@ -906,7 +911,7 @@ Watch `train/acc_q0` for the coarse RVQ level, and the `probe/` audio tab.
 If the pod restarts, resume with
 `--resume runs/exp1/checkpoints/acoustic/last.pt`.
 """),
-    code("!python scripts/train_acoustic.py --config $CONFIG"),
+    code("!{sys.executable} scripts/train_acoustic.py --config $CONFIG"),
     md("""
 ## Quick machinery check
 
@@ -915,7 +920,7 @@ measurable difference between exit depths, and an override that actually
 changes the output. Audio quality at this point depends entirely on how long
 the model trained.
 """),
-    code("!python scripts/smoke_generate.py --config $CONFIG --device cpu"),
+    code("!{sys.executable} scripts/smoke_generate.py --config $CONFIG --device cpu"),
     md("## Listen to the probe set"),
     code("""
 import json
