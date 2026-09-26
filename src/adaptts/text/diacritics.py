@@ -675,12 +675,20 @@ class ReadingLexicon:
         e = self.get(word)
         if e is None:
             return -1, "word not in the lexicon"
-        if e.n_codes == 1:
-            return 0, "single reading"
 
         raw = letter_marks(word)
         if not any(mk for _, mk in raw):
-            return -1, "no diacritics supplied"
+            # Nothing asked for. A single-reading word has only one answer.
+            return (0, "single reading") if e.n_codes == 1 else (
+                -1, "no diacritics supplied"
+            )
+
+        # A single-reading word is still checked against the marks rather than
+        # accepted outright. Returning code 0 unconditionally made corrections
+        # silently vanish: مصر learned only مَصْر, because مُصِرّ occurs twice in
+        # 15650 sentences and min_pattern_count rightly rejects n=2, so writing
+        # مُصِرّ selected the Egypt reading and said nothing. A correction that
+        # cannot be honoured has to say so.
 
         # Same reduction as every stored pattern, so slots are comparable.
         user_slots = vowel_pattern(word).split("|")
@@ -718,6 +726,16 @@ class ReadingLexicon:
                     "the marks given fall on positions the lexicon does not "
                     "distinguish (word-initial letter or case ending); mark an "
                     "interior vowel instead"
+                )
+            if e.n_codes == 1:
+                # The distinction the user wants was never learned, usually
+                # because that reading is too rare in the corpus to separate
+                # from a diacritizer slip. Naming the cause matters: no amount
+                # of re-marking will help, and the fix is more data.
+                return -1, (
+                    f"{word} has only one learned reading ({e.examples[0]}, "
+                    f"{e.total} uses); the reading asked for is not in the "
+                    f"corpus often enough to have been learned"
                 )
             return -1, "marks conflict with every known reading"
         clean.sort(key=lambda s: -s[0])

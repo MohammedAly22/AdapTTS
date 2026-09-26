@@ -193,6 +193,32 @@ def test_single_reading_words_need_no_marks():
     assert lex.code_from_partial_marks("مدينه")[0] == 0
 
 
+def test_a_correction_that_was_never_learned_says_so():
+    """Measured on the real corpus: مصر ends up with ONE reading.
+
+    مُصِرّ occurs twice in 15650 sentences, and min_pattern_count rightly rejects
+    n=2 -- at that count a real reading is indistinguishable from a diacritizer
+    slip. The bug this pins: the single-reading branch used to return code 0
+    before looking at the marks, so writing مُصِرّ silently selected مَصْر and
+    reported nothing. A correction that cannot be honoured has to say why, since
+    no amount of re-marking will help and the real fix is more data.
+    """
+    egypt_only = ReadingLexicon(
+        {"مصر": WordReadings(
+            word="مصر", patterns=[vowel_pattern("مَصْرِ")],
+            counts=[249], examples=["مَصْرِ"], total=249)},
+        max_codes=4,
+    )
+    code, reason = egypt_only.code_from_partial_marks("مُصِرّ")
+    assert code == -1, f"silently accepted as code {code}"
+    assert "one learned reading" in reason, reason
+
+    # Marks that agree with the one reading it does know still resolve.
+    assert egypt_only.code_from_partial_marks("مَصْرِ")[0] == 0
+    # And a bare word is still fine: there is only one answer.
+    assert egypt_only.code_from_partial_marks("مصر")[0] == 0
+
+
 def test_lookup_folds_the_spelling():
     """A caller holding مدينة must find the entry stored under مدينه."""
     lex = _lexicon()
