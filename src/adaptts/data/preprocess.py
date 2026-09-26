@@ -26,6 +26,12 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
+from ..text.diacritics import (
+    ReadingLexicon,
+    align_tokens,
+    collect_readings,
+    strip_junk,
+)
 from ..text.egyptian import normalize_egyptian
 from ..text.normalize import normalize_text, tokenize_words
 from ..text.vocab import CharVocab
@@ -616,6 +622,96 @@ class OccurrenceRecord:
     end_sec: float
     score: float
     row: int  # index into the span-embedding memmap
+
+
+def build_reading_lexicon(
+    cfg: Config, force: bool = False
+) -> Tuple[ReadingLexicon, Dict[Tuple[str, int], int]]:
+    """Derive pronunciation labels from the cached diacritized transcripts.
+
+    This replaces unsupervised acoustic clustering as the source of labels.
+    Clustering failed on the real corpus in a way that looked like success: it
+    returned the channel's subscribe pitch (الجرس, التعليقات, لايك, الوصف) as
+    "homographs", because those words appear in two acoustic registers, while
+    علم, مصر and دول each got a single code. A mean-pooled embedding over a word
+    span encodes rate, energy and channel far more strongly than vowel identity,
+    so no gate on that signal can separate them.
+
+    Diacritics observe the vowels directly. Returns the lexicon plus a mapping
+    ``(uid, word_index) -> code`` giving each occurrence its reading.
+    """
+    lex_path = Path(cfg.paths.reading_lexicon_path)
+    labels_path = Path(cfg.paths.cache_dir) / "code_labels.json"
+    diac_path = Path(cfg.paths.cache_dir) / "diacritized.jsonl"
+
+    if lex_path.exists() and labels_path.exists() and not force:
+        lex = ReadingLexicon.load(lex_path)
+        raw = json.load(open(labels_path, encoding="utf-8"))
+        labels = {
+            (k.split("\t")[0], int(k.split("\t")[1])): v for k, v in raw.items()
+        }
+        logger.info(
+            "readings: reusing %d word types (%d ambiguous), %d labels",
+            len(lex), len(lex.ambiguous_words), len(labels),
+        )
+        return lex, labels
+
+    if not diac_path.exists():
+        raise FileNotFoundError(
+            f"diacritized transcripts not found at {diac_path}\n\n"
+            "Pronunciation labels now come from a diacritizer rather than from\n"
+            "clustering. Run the diacritization pass first:\n\n"
+            "  python scripts/diacritize.py --config <cfg> --catt-root <path>\n"
+        )
+
+    rows = [json.loads(l) for l in open(diac_path, encoding="utf-8") if l.strip()]
+    logger.info("readings: %d diacritized utterances", len(rows))
+
+    pairs = []
+    for r in progress(rows, desc="A3 reading patterns", unit="utt"):
+        pairs.append((r["text"].split(), strip_junk(r["diacritized"]).split()))
+
+    d = cfg.discovery
+    readings = collect_readings(
+        pairs,
+        min_word_freq=d.min_word_freq,
+        min_pattern_count=d.min_pattern_count,
+        min_pattern_frac=d.min_pattern_frac,
+        max_codes=d.max_codes_per_word,
+    )
+    lex = ReadingLexicon(readings, d.max_codes_per_word)
+    lex.save(lex_path)
+
+    # Label every occurrence of every ambiguous word.
+    labels: Dict[Tuple[str, int], int] = {}
+    unmatched = 0
+    for r in progress(rows, desc="A3 labelling", unit="utt"):
+        plain = r["text"].split()
+        diac = align_tokens(plain, strip_junk(r["diacritized"]).split())
+        for wi, (word, dform) in enumerate(zip(plain, diac)):
+            if dform is None or not lex.is_ambiguous(word):
+                continue
+            code = lex.code_of(word, dform)
+            if code < 0:
+                unmatched += 1
+                continue
+            labels[(r["uid"], wi)] = code
+
+    with open(labels_path, "w", encoding="utf-8") as f:
+        json.dump({f"{k[0]}\t{k[1]}": v for k, v in labels.items()}, f)
+
+    n_amb = len(lex.ambiguous_words)
+    logger.info(
+        "readings: %d word types, %d ambiguous, %d occurrences labelled "
+        "(%d unmatched patterns)",
+        len(lex), n_amb, len(labels), unmatched,
+    )
+    if n_amb == 0:
+        logger.warning(
+            "no ambiguous words found. Check that diacritized.jsonl is "
+            "populated and that discovery.min_pattern_count is not too high."
+        )
+    return lex, labels
 
 
 def _discovery_params(cfg: Config) -> dict:

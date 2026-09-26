@@ -74,6 +74,15 @@ class PathsConfig:
         return Path(self.cache_dir) / "pronunciation_codes.json"
 
     @property
+    def reading_lexicon_path(self) -> Path:
+        """Per-word readings derived from diacritized text."""
+        return Path(self.cache_dir) / "reading_lexicon.json"
+
+    @property
+    def diacritized_path(self) -> Path:
+        return Path(self.cache_dir) / "diacritized.jsonl"
+
+    @property
     def charvocab_path(self) -> Path:
         return Path(self.cache_dir) / "char_vocab.json"
 
@@ -148,7 +157,12 @@ class SpanEmbConfig:
 class DiscoveryConfig:
     """Pronunciation-code discovery (clustering) hyperparameters."""
 
-    min_word_freq: int = 12
+    # A word must appear this often before its readings are trusted.
+    min_word_freq: int = 5
+    # A vowel pattern must be seen this many times, and hold this share of
+    # the word's uses, to count as a reading rather than a diacritizer slip.
+    min_pattern_count: int = 3
+    min_pattern_frac: float = 0.08
     max_codes_per_word: int = 4
     n_bootstrap: int = 24
     bootstrap_frac: float = 0.8

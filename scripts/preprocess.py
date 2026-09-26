@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from adaptts.data.preprocess import (  # noqa: E402
     CTCAlignerRunner,
+    build_reading_lexicon,
     OccurrenceRecord,
     SpanEmbedder,
     Utterance,
@@ -565,22 +566,18 @@ def main() -> None:
     elif not align_path.exists() and args.stage in ("spanemb", "discover"):
         raise SystemExit("stage 'align' must run before 'spanemb'/'discover'")
 
-    if run("spanemb") or run("discover"):
-        occ, embs = stage_span_embeddings(
-            cfg, utts, align_path, device, force_for("spanemb")
-        )
-        lexicon, labels = discover_pronunciation_codes(
-            cfg, occ, embs, force=force_for("discover")
-        )
-        with open(Path(cfg.paths.cache_dir) / "code_labels.json", "w", encoding="utf-8") as f:
-            json.dump({f"{k[0]}\t{k[1]}": v for k, v in labels.items()}, f)
-        report_discovery(cfg, lexicon)
+    if run("discover"):
+        # Labels come from the diacritizer, not from acoustic clustering.
+        # Clustering returned the channel's subscribe pitch as "homographs"
+        # while the real ones got a single code; see text/diacritics.py.
+        lexicon, labels = build_reading_lexicon(cfg, force=force_for("discover"))
+        report_readings(cfg, lexicon)
     else:
-        from adaptts.data.discovery import PronunciationLexicon
+        from adaptts.text.diacritics import ReadingLexicon
 
         lexicon = (
-            PronunciationLexicon.load(Path(cfg.paths.lexicon_path))
-            if Path(cfg.paths.lexicon_path).exists() else None
+            ReadingLexicon.load(Path(cfg.paths.reading_lexicon_path))
+            if Path(cfg.paths.reading_lexicon_path).exists() else None
         )
         labels = {}
         lp = Path(cfg.paths.cache_dir) / "code_labels.json"
@@ -603,26 +600,29 @@ def main() -> None:
     logger.info("=" * 68)
 
 
-def report_discovery(cfg: Config, lexicon) -> None:
-    """Write a human-readable report of what was discovered."""
+def report_readings(cfg: Config, lexicon) -> None:
+    """Write a human-readable report of the readings found.
+
+    This is the decision point for the whole project: if the words listed here
+    are real homographs rather than register artifacts, the labels are sound.
+    """
     words = lexicon.ambiguous_words
-    path = Path(cfg.paths.cache_dir) / "discovery_report.txt"
-    rows = sorted(
-        (lexicon.entries[w] for w in words), key=lambda e: -e.occurrence_count
-    )
+    path = Path(cfg.paths.cache_dir) / "reading_report.txt"
+    rows = sorted((lexicon.entries[w] for w in words), key=lambda e: -e.total)
+
     with open(path, "w", encoding="utf-8") as f:
-        f.write(f"discovered {len(words)} ambiguous word types\n\n")
-        f.write(f"{'word':<20}{'codes':>6}{'occurrences':>13}{'stability':>11}"
-                f"{'silhouette':>12}{'separation':>12}  counts\n")
-        f.write("-" * 92 + "\n")
+        f.write(f"{len(lexicon)} word types, {len(words)} with several readings\n\n")
+        f.write(f"{'word':<18}{'readings':>9}{'uses':>7}  counts / examples\n")
+        f.write("-" * 78 + "\n")
         for e in rows:
-            f.write(
-                f"{e.word:<20}{e.n_codes:>6}{e.occurrence_count:>13}"
-                f"{e.stability:>11.3f}{e.silhouette:>12.3f}{e.separation:>12.3f}  {e.counts}\n"
-            )
-    logger.info("discovery report -> %s", path)
+            ex = "  ".join(f"{x}({n})" for x, n in zip(e.examples, e.counts))
+            f.write(f"{e.word:<18}{e.n_codes:>9}{e.total:>7}  {ex}\n")
+
+    logger.info("reading report -> %s", path)
+    logger.info("%d word types have more than one reading", len(words))
     for e in rows[:15]:
-        logger.info("  %s: %d readings, counts=%s", e.word, e.n_codes, e.counts)
+        ex = "  ".join(f"{x}({n})" for x, n in zip(e.examples, e.counts))
+        logger.info("  %s: %d readings  %s", e.word, e.n_codes, ex)
 
 
 if __name__ == "__main__":

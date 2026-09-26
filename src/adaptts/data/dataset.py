@@ -24,6 +24,7 @@ from torch.utils.data import Dataset, Sampler
 from ..text.normalize import tokenize_words
 from ..text.vocab import CharVocab
 from ..utils.config import Config
+from ..text.diacritics import ReadingLexicon
 from .discovery import PronunciationLexicon
 
 logger = logging.getLogger(__name__)
@@ -82,7 +83,7 @@ class AdapTTSDataset(Dataset):
         cfg: Config,
         split: str,
         vocab: CharVocab,
-        lexicon: Optional[PronunciationLexicon],
+        lexicon: Optional["ReadingLexicon"],
         need_codes: bool = True,
         need_teacher: bool = False,
     ) -> None:

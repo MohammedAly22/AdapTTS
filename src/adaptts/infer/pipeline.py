@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from ..data.discovery import PronunciationLexicon
+from ..text.diacritics import ReadingLexicon
 from ..models.acoustic import AcousticModel
 from ..models.context_encoder import ContextEncoder
 from ..text.normalize import normalize_text, tokenize_words
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 def prepare_inputs(
     text: str,
     vocab: CharVocab,
-    lexicon: Optional[PronunciationLexicon],
+    lexicon: Optional["ReadingLexicon"],
     device: torch.device,
     cfg: Optional[Config] = None,
 ) -> Dict[str, torch.Tensor]:
@@ -210,7 +210,7 @@ class AdapTTS:
         self,
         cfg: Config,
         vocab: CharVocab,
-        lexicon: Optional[PronunciationLexicon],
+        lexicon: Optional["ReadingLexicon"],
         context_encoder: Optional[ContextEncoder],
         acoustic: Optional[AcousticModel],
         codec=None,
@@ -241,8 +241,8 @@ class AdapTTS:
         cfg = load_config(config_path)
         dev = torch.device(device)
         vocab = CharVocab.load(Path(cfg.paths.charvocab_path))
-        lex_path = Path(cfg.paths.lexicon_path)
-        lexicon = PronunciationLexicon.load(lex_path) if lex_path.exists() else None
+        lex_path = Path(cfg.paths.reading_lexicon_path)
+        lexicon = ReadingLexicon.load(lex_path) if lex_path.exists() else None
 
         ctx = None
         cpath = context_ckpt or str(Path(cfg.paths.ckpt_dir) / "context_encoder" / "best.pt")

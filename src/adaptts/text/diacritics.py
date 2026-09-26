@@ -204,7 +204,12 @@ def vowel_pattern(word: str, drop_case_ending: bool = True) -> str:
         return ""
 
     if drop_case_ending and len(pairs) > 1:
-        pairs = pairs[:-1] + [(pairs[-1][0], "")]
+        # Drop the final VOWEL only. Shadda on the last letter is consonant
+        # doubling, not a case ending: مُصِرّ really ends in a doubled ر, and
+        # clearing it would merge مُصِرّ with مُصِر.
+        last_letter, last_marks = pairs[-1]
+        kept = SHADDA if SHADDA in last_marks else ""
+        pairs = pairs[:-1] + [(last_letter, kept)]
 
     # Shadda is doubling, which is phonemic (مُصِرّ), so it is preserved. The
     # order of marks on one letter is normalized so shadda+vowel and

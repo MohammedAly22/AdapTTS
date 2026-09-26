@@ -31,7 +31,7 @@ from adaptts.data.dataset import (  # noqa: E402
     Collator,
     LengthBucketSampler,
 )
-from adaptts.data.discovery import PronunciationLexicon  # noqa: E402
+from adaptts.text.diacritics import ReadingLexicon  # noqa: E402
 from adaptts.models.acoustic import AcousticModel, acoustic_loss  # noqa: E402
 from adaptts.models.context_encoder import ContextEncoder  # noqa: E402
 from adaptts.text.vocab import CharVocab  # noqa: E402
@@ -295,8 +295,8 @@ def main() -> None:
 
     vocab = CharVocab.load(Path(cfg.paths.charvocab_path))
     lexicon = (
-        PronunciationLexicon.load(Path(cfg.paths.lexicon_path))
-        if Path(cfg.paths.lexicon_path).exists() else None
+        ReadingLexicon.load(Path(cfg.paths.reading_lexicon_path))
+        if Path(cfg.paths.reading_lexicon_path).exists() else None
     )
 
     train_ds = AdapTTSDataset(cfg, "train", vocab, lexicon, need_codes=True)

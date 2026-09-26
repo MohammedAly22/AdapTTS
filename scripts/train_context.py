@@ -29,7 +29,7 @@ from adaptts.data.dataset import (  # noqa: E402
     Collator,
     LengthBucketSampler,
 )
-from adaptts.data.discovery import PronunciationLexicon  # noqa: E402
+from adaptts.text.diacritics import ReadingLexicon  # noqa: E402
 from adaptts.models.context_encoder import ContextEncoder, context_encoder_loss  # noqa: E402
 from adaptts.text.vocab import CharVocab  # noqa: E402
 from adaptts.train.common import (  # noqa: E402
@@ -174,12 +174,16 @@ def main() -> None:
     check_preprocessing(cfg, need_codes=False, need_teacher=True)
 
     vocab = CharVocab.load(Path(cfg.paths.charvocab_path))
-    lex_path = Path(cfg.paths.lexicon_path)
+    lex_path = Path(cfg.paths.reading_lexicon_path)
     if not lex_path.exists():
         raise SystemExit(
-            f"pronunciation codes not found at {lex_path}; run scripts/preprocess.py"
+            f"reading lexicon not found at {lex_path}.\n"
+            "Pronunciation labels come from a diacritizer, not from clustering.\n"
+            "Run these two stages first:\n"
+            "  python scripts/diacritize.py --config <cfg> --catt-root <path>\n"
+            "  python scripts/preprocess.py --config <cfg> --stage discover\n"
         )
-    lexicon = PronunciationLexicon.load(lex_path)
+    lexicon = ReadingLexicon.load(lex_path)
     n_amb = len(lexicon.ambiguous_words)
     logger.info("lexicon: %d ambiguous word types discovered", n_amb)
     if n_amb == 0:

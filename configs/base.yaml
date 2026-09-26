@@ -83,7 +83,15 @@ spanemb:
   dim: 1024
 
 discovery:
-  min_word_freq: 12
+  # Labels now come from a diacritizer, which reads every occurrence directly,
+  # rather than from clustering, which needed many samples per word to be
+  # confident. A threshold of 12 discarded genuine homographs that simply do
+  # not appear that often; 5 is enough when each occurrence is observed.
+  min_word_freq: 5
+  # A vowel pattern must be seen this often, and hold this share of the word's
+  # uses, before it counts as a reading rather than a diacritizer slip.
+  min_pattern_count: 3
+  min_pattern_frac: 0.08
   max_codes_per_word: 4
   n_bootstrap: 24
   bootstrap_frac: 0.8
